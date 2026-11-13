@@ -4,6 +4,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"os"
 	"sort"
 	"strings"
 	"sync"
@@ -170,6 +171,11 @@ func (s *Session) upK8s() error {
 	if _, err := s.kubectl(secretManifest(s.M.L.K8s("app-env"), s.Namespace, s.Secrets, labels), "apply", "-f", "-"); err != nil {
 		return fmt.Errorf("secret: %w", err)
 	}
+	// registry credentials for private images (CI passes AXON_PULL_*)
+	pullSecret, err := s.applyPullSecret(labels)
+	if err != nil {
+		return err
+	}
 	// the conventional Postgres credentials Secret, for tools that read it
 	// (e.g. data-migration scripts: kubectl get secret postgres-credentials)
 	pgCreds := map[string]string{"username": s.PG.User, "password": s.Secrets["POSTGRES_PASSWORD"]}
@@ -201,6 +207,7 @@ func (s *Session) upK8s() error {
 	}
 	in, k = s.k8sInput(ips)
 	docs := gen.K8sWorkloads(in, k)
+	gen.AddPullSecret(docs, pullSecret)
 	_ = s.writeManifest("services", svcDocs)
 	_ = s.writeManifest("workloads", docs)
 	var fabric, apps []any
@@ -500,4 +507,34 @@ func (s *Session) planK8s(svcs []gen.ServiceSpec) error {
 	}
 	ui.OK("API server accepted all %d objects (server-side dry run; manifests in %s/k8s/axon/)", len(all), s.M.L.Infra)
 	return nil
+}
+
+// applyPullSecret creates the image pull Secret from AXON_PULL_REGISTRY,
+// AXON_PULL_USERNAME and AXON_PULL_PASSWORD; it returns "" when they are unset.
+func (s *Session) applyPullSecret(labels map[string]string) (string, error) {
+	reg, user, pass := os.Getenv("AXON_PULL_REGISTRY"), os.Getenv("AXON_PULL_USERNAME"), os.Getenv("AXON_PULL_PASSWORD")
+	if reg == "" || user == "" || pass == "" {
+		if reg != "" || user != "" || pass != "" {
+			ui.Warn("AXON_PULL_REGISTRY, AXON_PULL_USERNAME and AXON_PULL_PASSWORD must all be set; not creating an image pull secret")
+		}
+		return "", nil
+	}
+	name := s.M.L.K8s("registry")
+	cfg, err := json.Marshal(map[string]any{"auths": map[string]any{reg: map[string]string{
+		"username": user, "password": pass, "auth": base64.StdEncoding.EncodeToString([]byte(user + ":" + pass)),
+	}}})
+	if err != nil {
+		return "", err
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "apiVersion: v1\nkind: Secret\nmetadata:\n  name: %s\n  namespace: %s\n  labels:\n", name, s.Namespace)
+	for _, k := range sortedKeys(labels) {
+		fmt.Fprintf(&b, "    %s: %q\n", k, labels[k])
+	}
+	fmt.Fprintf(&b, "type: kubernetes.io/dockerconfigjson\ndata:\n  .dockerconfigjson: %s\n", base64.StdEncoding.EncodeToString(cfg))
+	if _, err := s.kubectl(b.String(), "apply", "-f", "-"); err != nil {
+		return "", fmt.Errorf("image pull secret: %w", err)
+	}
+	ui.Sub("image pull secret %s (%s)", name, reg)
+	return name, nil
 }

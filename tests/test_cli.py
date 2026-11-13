@@ -21,6 +21,7 @@ ALL_VERBS = sorted([
     "env plan", "env undeploy", "env status", "env logs", "env restart", "env test", "env iam-keys",
     "env rotate-iam-key",
     "release list", "release show", "release check", "release create", "release lock", "release checkout",
+    "release cut", "ci status", "ci watch", "ci logs", "ci init", "ci check", "ci secrets", "ci environments",
     "secrets set", "secrets list", "secrets rm", "secrets import", "secrets exec",
 ])
 
@@ -130,8 +131,8 @@ def test_version_flag_and_verb_agree(axon):
     (["cluster"], "cluster new"),
     (["e"], "env new"),
     (["app"], "app new"),
-    (["rel"], "release list"),
-    (["c"], "completion"),
+    (["rel"], "release cut"),
+    (["c"], "ci init"),
     (["d"], "down"),
     (["ver"], "version"),
     (["platform"], "platform init"),  # no verb matches; moved names are searched next

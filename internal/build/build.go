@@ -6,6 +6,7 @@
 package build
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -28,6 +29,27 @@ type Options struct {
 	DryRun  bool
 	Arch    string // linux arch for Go servers (default: docker's)
 	Load    string // e.g. "kind:<cluster>" to load images into kind
+
+	// Platforms are the image platforms, e.g. ["linux/amd64", "linux/arm64"]. One
+	// platform builds a local image for it; more than one builds multi-architecture
+	// images with docker buildx, which must push them (Push) — such images cannot be
+	// loaded into the local image store.
+	Platforms []string
+	// Push is a registry prefix (e.g. ghcr.io/owner); with several Platforms every image
+	// is pushed as <Push>/<repo>:<tag> and Image.Pushed records its digest reference.
+	Push string
+}
+
+// MultiArch reports whether the options ask for multi-architecture images.
+func (o Options) MultiArch() bool { return len(o.Platforms) > 1 }
+
+// PlatformArch returns the GOARCH of "linux/<arch>[/<variant>]".
+func PlatformArch(p string) (string, error) {
+	parts := strings.Split(p, "/")
+	if len(parts) < 2 || parts[0] != "linux" || parts[1] == "" {
+		return "", fmt.Errorf("platform %q: want linux/<arch>, e.g. linux/amd64", p)
+	}
+	return parts[1], nil
 }
 
 // Image is one image the plan produces.
@@ -38,8 +60,9 @@ type Image struct {
 	Tag        string
 	Context    string
 	Dockerfile string
-	Cached     bool // repo:tag already present locally
+	Cached     bool // repo:tag already present locally (or, multi-arch, in the registry)
 	Built      bool
+	Pushed     string // multi-arch: <registry>/<repo>@sha256:… once in the registry
 }
 
 // Ref returns repo:tag.
@@ -54,13 +77,14 @@ type Result struct {
 }
 
 type builder struct {
-	m     *descriptor.Model
-	o     Options
-	cache *Cache
-	root  string // <state>/build
-	arch  string
-	mu    sync.Mutex
-	res   *Result
+	m      *descriptor.Model
+	o      Options
+	cache  *Cache
+	root   string // <state>/build
+	arch   string
+	arches []string // multi-arch: GOARCH per platform
+	mu     sync.Mutex
+	res    *Result
 }
 
 // DockerArch returns docker's server architecture as a GOARCH value.
@@ -87,6 +111,25 @@ func Run(m *descriptor.Model, o Options) (*Result, error) {
 	b := &builder{m: m, o: o, cache: OpenCache(m.State), root: filepath.Join(m.State, "build"),
 		res: &Result{Tags: map[string]string{}}}
 	b.arch = o.Arch
+	switch {
+	case o.MultiArch():
+		if o.Push == "" {
+			return nil, fmt.Errorf("multi-architecture images (%s) must be pushed to a registry: buildx cannot load them locally", strings.Join(o.Platforms, ", "))
+		}
+		for _, p := range o.Platforms {
+			a, err := PlatformArch(p)
+			if err != nil {
+				return nil, err
+			}
+			b.arches = append(b.arches, a)
+		}
+	case len(o.Platforms) == 1:
+		a, err := PlatformArch(o.Platforms[0])
+		if err != nil {
+			return nil, err
+		}
+		b.arch = a
+	}
 	if b.arch == "" {
 		b.arch = DockerArch()
 	}
@@ -144,6 +187,12 @@ func Run(m *descriptor.Model, o Options) (*Result, error) {
 		if img.Built || img.Context == "" {
 			continue
 		}
+		if o.MultiArch() {
+			// the same inputs built for other platforms are a different image
+			img.Tag = shortHash(HashStrings(img.Tag, strings.Join(o.Platforms, ",")))
+			tasks = append(tasks, func() error { return b.buildxPush(img) })
+			continue
+		}
 		tasks = append(tasks, func() error { return b.dockerBuild(img) })
 	}
 	if err := parallel(o.Jobs, tasks); err != nil {
@@ -155,7 +204,7 @@ func Run(m *descriptor.Model, o Options) (*Result, error) {
 			b.res.Skipped++
 		}
 	}
-	if strings.HasPrefix(o.Load, "kind:") && !o.DryRun {
+	if strings.HasPrefix(o.Load, "kind:") && !o.DryRun && !o.MultiArch() {
 		for _, img := range b.res.Images {
 			if _, err := sh.Run(sh.Cmd{Name: "kind", Args: []string{"load", "docker-image", img.Ref(), "--name", strings.TrimPrefix(o.Load, "kind:")}}); err != nil {
 				return nil, err
@@ -233,6 +282,9 @@ func (b *builder) module(a *descriptor.AppModel, mod *descriptor.Module) error {
 		if err != nil {
 			return err
 		}
+		if len(b.arches) > 0 {
+			return b.multiArchServer(a, mod, label, repo, ctx, svcDir, h)
+		}
 		h = HashStrings(h, b.arch, serverDockerfile)
 		key := "server:" + label
 		bin := filepath.Join(ctx, "server")
@@ -272,6 +324,54 @@ func (b *builder) module(a *descriptor.AppModel, mod *descriptor.Module) error {
 	b.addImage(&Image{App: a.Decl.Name, Service: mod.Token, Repo: repo, Tag: shortHash(h), Context: src, Dockerfile: df})
 	return nil
 }
+
+// multiArchServer cross-compiles a Go module server once per platform; the
+// multi-arch Dockerfile picks the binary matching the platform being assembled.
+func (b *builder) multiArchServer(a *descriptor.AppModel, mod *descriptor.Module, label, repo, ctx, svcDir, srcHash string) error {
+	h := HashStrings(srcHash, strings.Join(b.arches, ","), serverDockerfileMulti)
+	for _, arch := range b.arches {
+		key := "server:" + label + ":" + arch
+		ah := HashStrings(srcHash, arch)
+		bin := filepath.Join(ctx, "server-"+arch)
+		if !b.o.Rebuild && b.cache.Get(key) == ah && exists(bin) {
+			continue
+		}
+		if b.o.DryRun {
+			ui.Sub("would compile %s (go, linux/%s)", label, arch)
+			continue
+		}
+		ui.Sub("compile %s (go, linux/%s)", label, arch)
+		if err := os.MkdirAll(ctx, 0o755); err != nil {
+			return err
+		}
+		if _, err := sh.Run(sh.Cmd{Name: "go", Args: []string{"build", "-trimpath", "-ldflags=-s -w", "-o", bin, "."},
+			Dir: svcDir, Env: []string{"CGO_ENABLED=0", "GOOS=linux", "GOARCH=" + arch}, Timeout: 20 * time.Minute}); err != nil {
+			return fmt.Errorf("%s server (linux/%s): %w", label, arch, err)
+		}
+		b.cache.Put(key, ah)
+	}
+	df := filepath.Join(ctx, "Dockerfile.multiarch")
+	if !b.o.DryRun {
+		if _, err := WriteIfChanged(df, serverDockerfileMulti, 0o644); err != nil {
+			return err
+		}
+	}
+	b.addImage(&Image{App: a.Decl.Name, Service: mod.Token, Repo: repo, Tag: shortHash(h), Context: ctx, Dockerfile: df})
+	return nil
+}
+
+const serverDockerfileMulti = `# GENERATED by axon — multi-architecture runtime image for a module server
+# cross-compiled on the host once per platform (server-<arch>).
+FROM alpine:3
+ARG TARGETARCH
+RUN apk upgrade --no-cache && adduser -D -u 65532 app
+WORKDIR /app
+COPY server-${TARGETARCH} /app/server
+ENV MYCEL_LISTEN=0.0.0.0:7373
+EXPOSE 7373
+USER 65532
+CMD ["/app/server"]
+`
 
 const serverDockerfile = `# GENERATED by axon — thin runtime image for a module server compiled on the host.
 FROM alpine:3
@@ -476,14 +576,80 @@ func (b *builder) dockerBuild(img *Image) error {
 	}
 	ui.Sub("build image %s", img.Ref())
 	start := time.Now()
-	_, err := sh.Run(sh.Cmd{Name: "docker", Args: []string{"build", "-q", "-f", img.Dockerfile,
-		"-t", img.Ref(), "-t", img.Repo + ":latest", "--label", "axon.dev/app=" + img.App, img.Context},
+	args := []string{"build", "-q", "-f", img.Dockerfile, "-t", img.Ref(), "-t", img.Repo + ":latest", "--label", "axon.dev/app=" + img.App}
+	if len(b.o.Platforms) == 1 {
+		args = append(args, "--platform", b.o.Platforms[0])
+	}
+	_, err := sh.Run(sh.Cmd{Name: "docker", Args: append(args, img.Context),
 		Env: []string{"DOCKER_BUILDKIT=1"}, Timeout: 45 * time.Minute})
 	if err != nil {
 		return fmt.Errorf("image %s: %w", img.Ref(), err)
 	}
 	img.Built = true
 	ui.Debug("built %s in %s", img.Ref(), time.Since(start).Round(time.Second))
+	return nil
+}
+
+// RemoteDigest returns the manifest digest of ref in its registry ("" if absent).
+func RemoteDigest(ref string) string {
+	out, err := sh.Output("docker", "buildx", "imagetools", "inspect", "--format", "{{json .Manifest}}", ref)
+	if err != nil {
+		return ""
+	}
+	var mf struct {
+		Digest string `json:"digest"`
+	}
+	if json.Unmarshal([]byte(out), &mf) != nil || !strings.HasPrefix(mf.Digest, "sha256:") {
+		return ""
+	}
+	return mf.Digest
+}
+
+// buildxPush builds a multi-architecture image and pushes it, unless the registry
+// already has that tag (tags are input hashes, so an existing tag is the same build).
+func (b *builder) buildxPush(img *Image) error {
+	reg := strings.TrimSuffix(b.o.Push, "/")
+	target := reg + "/" + img.Repo + ":" + img.Tag
+	if !b.o.Rebuild {
+		if d := RemoteDigest(target); d != "" {
+			img.Cached = true
+			img.Pushed = reg + "/" + img.Repo + "@" + d
+			return nil
+		}
+	}
+	if b.o.DryRun {
+		ui.Sub("would build and push %s (%s)", target, strings.Join(b.o.Platforms, ", "))
+		return nil
+	}
+	ui.Sub("build and push %s (%s)", target, strings.Join(b.o.Platforms, ", "))
+	start := time.Now()
+	meta := filepath.Join(b.root, ".buildx", strings.NewReplacer("/", "_", ":", "_").Replace(img.Repo+":"+img.Tag)+".json")
+	if err := os.MkdirAll(filepath.Dir(meta), 0o755); err != nil {
+		return err
+	}
+	_, err := sh.Run(sh.Cmd{Name: "docker", Args: []string{"buildx", "build", "--platform", strings.Join(b.o.Platforms, ","),
+		"-f", img.Dockerfile, "-t", target, "--label", "axon.dev/app=" + img.App, "--push", "--metadata-file", meta, img.Context},
+		Timeout: 90 * time.Minute})
+	if err != nil {
+		return fmt.Errorf("image %s: %w\n(multi-platform builds need a buildx builder that supports them — `docker buildx create --use`, "+
+			"or Docker's containerd image store — and QEMU for foreign architectures)", target, err)
+	}
+	digest := ""
+	if bts, err := os.ReadFile(meta); err == nil {
+		var md map[string]any
+		if json.Unmarshal(bts, &md) == nil {
+			digest, _ = md["containerimage.digest"].(string)
+		}
+	}
+	if digest == "" {
+		digest = RemoteDigest(target)
+	}
+	if digest == "" {
+		return fmt.Errorf("image %s was pushed but its digest could not be read", target)
+	}
+	img.Built = true
+	img.Pushed = reg + "/" + img.Repo + "@" + digest
+	ui.Debug("built and pushed %s in %s", img.Pushed, time.Since(start).Round(time.Second))
 	return nil
 }
 

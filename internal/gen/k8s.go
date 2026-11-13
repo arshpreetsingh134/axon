@@ -567,6 +567,31 @@ func storageSize(in *Input) string {
 	return "10Gi"
 }
 
+// AddPullSecret makes every Deployment and StatefulSet pull with the named
+// kubernetes.io/dockerconfigjson Secret (private registry images).
+func AddPullSecret(docs []any, secret string) {
+	if secret == "" {
+		return
+	}
+	for _, d := range docs {
+		m, ok := d.(*y.M)
+		if !ok || (m.Get("kind") != "Deployment" && m.Get("kind") != "StatefulSet") {
+			continue
+		}
+		spec, _ := m.Get("spec").(*y.M)
+		if spec == nil {
+			continue
+		}
+		tmpl, _ := spec.Get("template").(*y.M)
+		if tmpl == nil {
+			continue
+		}
+		if ps, _ := tmpl.Get("spec").(*y.M); ps != nil {
+			ps.Set("imagePullSecrets", []any{y.New("name", secret)})
+		}
+	}
+}
+
 // WorkloadNames lists every Deployment/StatefulSet axon renders (for rollout waits and pruning).
 func WorkloadNames(docs []any) (deploys, statefulsets []string) {
 	for _, d := range docs {

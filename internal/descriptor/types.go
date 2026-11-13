@@ -236,6 +236,36 @@ type DeployDefaults struct {
 	Postgres string `toml:"postgres"`
 }
 
+// CIConfig is [ci] (axon extension): how `axon ci init` generates the pipeline.
+type CIConfig struct {
+	Provider    string   `toml:"provider"`     // github (default)
+	Branches    []string `toml:"branches"`     // push branches (default ["main"])
+	Runner      string   `toml:"runner"`       // runs-on (default ubuntu-latest)
+	E2E         *bool    `toml:"e2e"`          // deploy + journeys on the runner (default true)
+	AppTests    *bool    `toml:"app_tests"`    // axon app test per source app (default true)
+	Apps        []string `toml:"apps"`         // e2e subset (default: every app)
+	Env         string   `toml:"env"`          // environment used in CI (default ci)
+	Hooks       *bool    `toml:"hooks"`        // run lifecycle hooks in CI (default true)
+	Timeout     string   `toml:"timeout"`      // per-step deploy timeout (default 20m)
+	AxonVersion string   `toml:"axon_version"` // axon release to install (default latest)
+	AxonRepo    string   `toml:"axon_repo"`    // where axon releases live
+	// Checkouts maps a workspace-relative path to "owner/repo[@ref]": every repository the
+	// project is assembled from, placed where it lives on a developer machine.
+	Checkouts map[string]string `toml:"checkouts"`
+	// Links maps a workspace-relative symlink to its workspace-relative target
+	// (member apps that are links into a checkout).
+	Links map[string]string `toml:"links"`
+}
+
+// ReleaseConfig is [release] (axon extension).
+type ReleaseConfig struct {
+	// Registry is where `release create --push` publishes images, e.g. ghcr.io/owner.
+	Registry string `toml:"registry"`
+	// Platforms lists the image platforms to build, e.g. ["linux/amd64", "linux/arm64"].
+	// More than one produces a multi-architecture image (docker buildx); empty = the host's.
+	Platforms []string `toml:"platforms"`
+}
+
 // Cluster is a build_type = "cluster" descriptor.
 type Cluster struct {
 	BuildType string             `toml:"build_type"`
@@ -247,9 +277,11 @@ type Cluster struct {
 	Product   map[string]Product `toml:"product"`
 	Apps      []App              `toml:"app"`
 	// axon extensions (also accepted from axon.toml)
-	Hooks  Hooks             `toml:"hooks"`
-	Images map[string]string `toml:"images"`
-	Deploy DeployDefaults    `toml:"deploy"`
+	Hooks   Hooks             `toml:"hooks"`
+	Images  map[string]string `toml:"images"`
+	Deploy  DeployDefaults    `toml:"deploy"`
+	CI      CIConfig          `toml:"ci"`
+	Release ReleaseConfig     `toml:"release"`
 }
 
 // App returns the [[app]] named name.

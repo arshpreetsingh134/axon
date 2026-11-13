@@ -89,6 +89,14 @@ func (s *Session) resolveSecrets(readCluster func(key string) string) error {
 			ui.Debug("loaded %d value(s) from axon secrets (%s/%s)", len(stored), secrets.Namespace, st.Name)
 		}
 	}
+	// referenced ${VAR}s may also come from the process environment (CI secrets)
+	for _, v := range s.Input().SecretVars() {
+		if _, ok := s.Secrets[v]; !ok {
+			if pv := os.Getenv(v); pv != "" {
+				s.Secrets[v] = pv
+			}
+		}
+	}
 	persist := func(k, v, why string) {
 		s.Secrets[k] = v
 		if s.DryRun {

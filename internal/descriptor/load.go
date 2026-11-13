@@ -42,9 +42,11 @@ func LoadAppFile(path string) (*AppFile, error) {
 // Overlay is <infra>/axon.toml: axon-only settings that sit beside an unchanged
 // descriptor (so a mycel repo keeps working with mycel).
 type Overlay struct {
-	Hooks  Hooks             `toml:"hooks"`
-	Images map[string]string `toml:"images"`
-	Deploy DeployDefaults    `toml:"deploy"`
+	Hooks   Hooks             `toml:"hooks"`
+	Images  map[string]string `toml:"images"`
+	Deploy  DeployDefaults    `toml:"deploy"`
+	CI      CIConfig          `toml:"ci"`
+	Release ReleaseConfig     `toml:"release"`
 }
 
 // OverlayName is the overlay file name inside the infra dir.
@@ -127,6 +129,13 @@ func Load(f *layout.Found) (*Model, error) {
 		m.ImageMap[k] = v
 	}
 	mergeDeploy(&c.Deploy, ov.Deploy)
+	mergeCI(&c.CI, ov.CI)
+	if ov.Release.Registry != "" {
+		c.Release.Registry = ov.Release.Registry
+	}
+	if len(ov.Release.Platforms) > 0 {
+		c.Release.Platforms = ov.Release.Platforms
+	}
 	applySkipFabric(c)
 	if c.Deploy.RuntimePrefix != "" {
 		m.L.Prefix = c.Deploy.RuntimePrefix
@@ -173,6 +182,45 @@ func mergeDeploy(d *DeployDefaults, o DeployDefaults) {
 	}
 	if o.Postgres != "" {
 		d.Postgres = o.Postgres
+	}
+}
+
+func mergeCI(d *CIConfig, o CIConfig) {
+	str := func(dst *string, v string) {
+		if v != "" {
+			*dst = v
+		}
+	}
+	str(&d.Provider, o.Provider)
+	str(&d.Runner, o.Runner)
+	str(&d.Env, o.Env)
+	str(&d.Timeout, o.Timeout)
+	str(&d.AxonVersion, o.AxonVersion)
+	str(&d.AxonRepo, o.AxonRepo)
+	if len(o.Branches) > 0 {
+		d.Branches = o.Branches
+	}
+	if len(o.Apps) > 0 {
+		d.Apps = o.Apps
+	}
+	for _, b := range []struct {
+		dst **bool
+		v   *bool
+	}{{&d.E2E, o.E2E}, {&d.AppTests, o.AppTests}, {&d.Hooks, o.Hooks}} {
+		if b.v != nil {
+			*b.dst = b.v
+		}
+	}
+	for _, mp := range []struct {
+		dst *map[string]string
+		src map[string]string
+	}{{&d.Checkouts, o.Checkouts}, {&d.Links, o.Links}} {
+		if len(mp.src) > 0 && *mp.dst == nil {
+			*mp.dst = map[string]string{}
+		}
+		for k, v := range mp.src {
+			(*mp.dst)[k] = v
+		}
 	}
 }
 

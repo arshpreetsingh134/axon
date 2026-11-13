@@ -550,6 +550,13 @@ func envFindings(m *descriptor.Model, name string) ([]check.Finding, error) {
 			}
 		}
 	}
+	for _, kv := range os.Environ() {
+		if k, v, ok := strings.Cut(kv, "="); ok && v != "" {
+			if _, have := vals[k]; !have {
+				vals[k] = "(env)"
+			}
+		}
+	}
 	derived := map[string]bool{"POSTGRES_PASSWORD": true, "IAM_SIGNING_KEY": true, "OIDC_CLIENT_SECRET": true, "KEYCLOAK_ADMIN_PASSWORD": true}
 	in := &gen.Input{M: m, Env: e, Ov: ov, Target: "docker", PG: gen.PG{Host: "postgres", Port: 5432, User: gen.PGUser(m), Password: "${POSTGRES_PASSWORD}"}}
 	var missing []string
@@ -836,9 +843,17 @@ func applyRelease(s *sessionT, version string) error {
 	if !release.MadeByAxon(r) {
 		return fmt.Errorf("release %s was produced by %q; axon deploys releases it recorded (`axon release create`)", version, r.Str("tool_version"))
 	}
+	if s.Refs == nil {
+		s.Refs = map[string]string{}
+	}
 	for repo, ref := range r.Table("images") {
-		if i := strings.LastIndex(ref, ":"); i > 0 {
-			s.Tags[repo] = ref[i+1:]
+		switch {
+		case strings.Contains(ref, "@sha256:"): // pushed: registry/repo@sha256:…
+			s.Refs[repo] = ref
+		case strings.HasPrefix(ref, repo+":"): // local: repo:tag
+			s.Tags[repo] = strings.TrimPrefix(ref, repo+":")
+		default:
+			return fmt.Errorf("release %s: unrecognised image reference %q for %s", version, ref, repo)
 		}
 	}
 	ui.Note("deploying release %s (%d images)", version, len(r.Table("images")))

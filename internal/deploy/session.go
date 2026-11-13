@@ -52,6 +52,7 @@ type Session struct {
 	PGMode      string // compose | docker | in-cluster | external
 	PGContainer string
 	Tags        map[string]string
+	Refs        map[string]string // image repo → registry reference (release deploys)
 	DryRun      bool
 	started     time.Time
 	// pgPassDefaulted: POSTGRES_PASSWORD came from the compat default, not .env
@@ -78,6 +79,15 @@ func Open(m *descriptor.Model, o Options) (*Session, error) {
 	}
 	if env.AccountID != "" {
 		ui.Debug("environments/%s.toml account_id is ignored (axon has no accounts or tenants)", o.Env)
+	}
+	if env.Domain != "" {
+		m.C.Domain = env.Domain
+	}
+	if env.HTTPPort > 0 {
+		if m.C.Fabric.Traefik == nil {
+			m.C.Fabric.Traefik = &descriptor.Traefik{}
+		}
+		m.C.Fabric.Traefik.HTTP = env.HTTPPort
 	}
 	ov, err := envcfg.LoadOverrides(m.Dir, o.Env)
 	if err != nil {
@@ -130,7 +140,7 @@ func (s *Session) resolveTarget() (string, error) {
 
 // Input builds the generator input for this session.
 func (s *Session) Input() *gen.Input {
-	return &gen.Input{M: s.M, Env: s.Env, Ov: s.Ov, Target: s.Target, PG: s.PG, Tags: s.Tags}
+	return &gen.Input{M: s.M, Env: s.Env, Ov: s.Ov, Target: s.Target, PG: s.PG, Tags: s.Tags, Refs: s.Refs}
 }
 
 func loadTags(stateDir string) map[string]string {
@@ -438,6 +448,9 @@ func (s *Session) checkBuiltImages() error {
 			repos = append(repos, descriptor.WorkerImage(s.M.C.Name, a.Decl.Name))
 		}
 		for _, r := range repos {
+			if s.Refs[r] != "" {
+				continue // pulled from the registry by the runtime
+			}
 			ref := s.Input().Image(r)
 			if !imageExists(ref) {
 				missing = append(missing, ref)

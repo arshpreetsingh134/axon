@@ -10,6 +10,7 @@ import (
 
 	"axon/internal/descriptor"
 	"axon/internal/layout"
+	y "axon/internal/yamlx"
 )
 
 const cluster = `build_type = "cluster"
@@ -206,5 +207,31 @@ func TestRouteHostFromExternalURL(t *testing.T) {
 		if got := RouteHost(c, &descriptor.App{Kind: "project", ExternalURL: u}); got != want {
 			t.Errorf("RouteHost(%q) = %q, want %q", u, got, want)
 		}
+	}
+}
+
+func TestRefsOverrideTags(t *testing.T) {
+	m := fixture(t)
+	in := input(m)
+	in.Tags = map[string]string{"repo": "abc"}
+	in.Refs = map[string]string{"repo": "ghcr.io/o/repo@sha256:1"}
+	if in.Image("repo") != "ghcr.io/o/repo@sha256:1" || in.ResolveRef("repo:latest") != "ghcr.io/o/repo@sha256:1" {
+		t.Fatalf("%s / %s", in.Image("repo"), in.ResolveRef("repo:latest"))
+	}
+	if in.Image("other") != "other:latest" {
+		t.Fatal("unrelated repos are untouched")
+	}
+}
+
+func TestAddPullSecret(t *testing.T) {
+	dep := y.New("kind", "Deployment", "spec", y.New("template", y.New("spec", y.New("containers", []any{}))))
+	svc := y.New("kind", "Service", "spec", y.New())
+	AddPullSecret([]any{dep, svc}, "shop-registry")
+	ps := dep.Get("spec").(*y.M).Get("template").(*y.M).Get("spec").(*y.M).Get("imagePullSecrets").([]any)
+	if len(ps) != 1 || ps[0].(*y.M).Get("name") != "shop-registry" {
+		t.Fatalf("pull secrets: %v", ps)
+	}
+	if svc.Get("spec").(*y.M).Get("imagePullSecrets") != nil {
+		t.Fatal("only workloads get pull secrets")
 	}
 }

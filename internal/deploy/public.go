@@ -14,3 +14,6 @@ func (s *Session) PreparePublic() error {
 	}
 	return s.preparePostgres()
 }
+
+// RunHooks runs one lifecycle stage's hooks.
+func (s *Session) RunHooks(stage string) error { return s.runHooks(stage) }

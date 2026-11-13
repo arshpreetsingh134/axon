@@ -41,7 +41,71 @@ type Env struct {
 			Reclaim string `toml:"reclaim" json:"reclaim,omitempty"`
 		} `toml:"durable" json:"durable"`
 	} `toml:"storage" json:"storage"`
-	Path string `toml:"-" json:"path"`
+	Cloud Cloud  `toml:"cloud" json:"cloud,omitempty"`
+	CI    EnvCI  `toml:"ci" json:"ci,omitempty"`
+	Path  string `toml:"-" json:"path"`
+}
+
+// Cloud is [cloud]: the managed Kubernetes cluster an environment deploys to from
+// CI. Identifiers here are not secrets; CI logs in with OIDC (no stored keys).
+type Cloud struct {
+	Provider string `toml:"provider" json:"provider,omitempty"` // eks | gke | aks | kubeconfig
+	Cluster  string `toml:"cluster" json:"cluster,omitempty"`
+	// eks
+	Region  string `toml:"region" json:"region,omitempty"`
+	RoleARN string `toml:"role_arn" json:"role_arn,omitempty"`
+	// gke
+	Project                  string `toml:"project" json:"project,omitempty"`
+	Location                 string `toml:"location" json:"location,omitempty"`
+	WorkloadIdentityProvider string `toml:"workload_identity_provider" json:"workload_identity_provider,omitempty"`
+	ServiceAccount           string `toml:"service_account" json:"service_account,omitempty"`
+	// aks
+	ResourceGroup  string `toml:"resource_group" json:"resource_group,omitempty"`
+	ClientID       string `toml:"client_id" json:"client_id,omitempty"`
+	TenantID       string `toml:"tenant_id" json:"tenant_id,omitempty"`
+	SubscriptionID string `toml:"subscription_id" json:"subscription_id,omitempty"`
+}
+
+// EnvCI is the environment's [ci]: how axon-deploy.yml and GitHub Environments treat it.
+type EnvCI struct {
+	Deploy      bool     `toml:"deploy" json:"deploy,omitempty"`             // include in axon-deploy.yml
+	Auto        bool     `toml:"auto" json:"auto,omitempty"`                 // deploy right after every release
+	Reviewers   []string `toml:"reviewers" json:"reviewers,omitempty"`       // GitHub users or org/team
+	WaitMinutes int      `toml:"wait_minutes" json:"wait_minutes,omitempty"` // GitHub Environment wait timer
+	URL         string   `toml:"url" json:"url,omitempty"`                   // shown on the GitHub deployment
+	Branches    []string `toml:"branches" json:"branches,omitempty"`         // branches allowed to deploy (default: any)
+}
+
+// Validate checks [cloud] for the fields its provider needs.
+func (c Cloud) Validate() error {
+	need := func(fields map[string]string) error {
+		var missing []string
+		for k, v := range fields {
+			if v == "" {
+				missing = append(missing, k)
+			}
+		}
+		sort.Strings(missing)
+		if len(missing) > 0 {
+			return fmt.Errorf("[cloud] provider %q needs %s", c.Provider, strings.Join(missing, ", "))
+		}
+		return nil
+	}
+	switch c.Provider {
+	case "eks":
+		return need(map[string]string{"cluster": c.Cluster, "region": c.Region, "role_arn": c.RoleARN})
+	case "gke":
+		return need(map[string]string{"cluster": c.Cluster, "project": c.Project, "location": c.Location,
+			"workload_identity_provider": c.WorkloadIdentityProvider, "service_account": c.ServiceAccount})
+	case "aks":
+		return need(map[string]string{"cluster": c.Cluster, "resource_group": c.ResourceGroup, "client_id": c.ClientID,
+			"tenant_id": c.TenantID, "subscription_id": c.SubscriptionID})
+	case "kubeconfig":
+		return nil
+	case "":
+		return fmt.Errorf("[cloud] provider is not set (eks, gke, aks or kubeconfig)")
+	}
+	return fmt.Errorf("[cloud] provider %q is not supported (eks, gke, aks or kubeconfig)", c.Provider)
 }
 
 // Overrides is environments/<env>.overrides.toml.

@@ -5,12 +5,14 @@ import (
 	"os"
 	"os/user"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
 
 	"github.com/BurntSushi/toml"
 
+	"axon/internal/build"
 	"axon/internal/cli"
 	"axon/internal/deploy"
 	"axon/internal/descriptor"
@@ -28,7 +30,13 @@ func releaseVerbs() []*cli.Verb {
 			Flags: []cli.Flag{flagDir, flagJSON}, Run: runReleaseCheck},
 		{Name: "release create", Group: "release", Summary: "record an immutable release from the last build: image refs, source commits, digest",
 			Flags: []cli.Flag{flagDir, {Name: "version", Kind: cli.String, Usage: "version (default: next patch of the series)"},
-				{Name: "series", Kind: cli.String, Usage: "series (default release/policy.toml series)"}, flagDryRun},
+				{Name: "series", Kind: cli.String, Usage: "series (default release/policy.toml series)"},
+				{Name: "build", Kind: cli.Bool, Usage: "build every app first (runs pre_build hooks unless --no-hooks)"},
+				{Name: "push", Kind: cli.Bool, Usage: "push every image to the registry and record it by digest (deployable anywhere)"},
+				{Name: "registry", Kind: cli.String, Usage: "registry to push to (default [release] registry), e.g. ghcr.io/owner"},
+				{Name: "platform", Kind: cli.String, Value: "<os/arch,...>", Usage: "with --build: image platforms (default [release] platforms); several build multi-architecture images and need --push"},
+				{Name: "no-hooks", Kind: cli.Bool, Usage: "with --build: skip lifecycle hooks"},
+				flagDryRun},
 			Run: runReleaseCreate},
 		{Name: "release lock", Group: "release", Summary: "pin every member app's source commit in release/sources.lock.toml",
 			Flags: []cli.Flag{flagDir, flagCheck}, Run: runReleaseLock},
@@ -185,7 +193,7 @@ func runReleaseCreate(c *cli.Ctx) error {
 	}
 	pol := release.LoadPolicy(m.Dir)
 	series := or(c.String("series"), pol.Series)
-	version := c.String("version")
+	version := strings.TrimPrefix(c.String("version"), "v")
 	if version == "" {
 		version = release.Next(series, pol.FirstPatch, existing)
 	}
@@ -196,23 +204,103 @@ func runReleaseCreate(c *cli.Ctx) error {
 	if _, err := os.Stat(p); err == nil {
 		return fmt.Errorf("release %s already exists; records are immutable", version)
 	}
-	s, err := deploy.Open(m, deploy.Options{Verb: "release create", Target: "docker"})
+	registry := strings.TrimSuffix(or(c.String("registry"), m.C.Release.Registry), "/")
+	if c.Bool("push") && registry == "" {
+		return cli.Usage("release create: --push needs a registry: set [release] registry = \"ghcr.io/<owner>\" or pass --registry")
+	}
+	platforms := m.C.Release.Platforms
+	if p := c.String("platform"); p != "" {
+		platforms = nil
+		for _, x := range strings.Split(p, ",") {
+			if x = strings.TrimSpace(x); x != "" {
+				platforms = append(platforms, x)
+			}
+		}
+	}
+	for _, p := range platforms {
+		if _, err := build.PlatformArch(p); err != nil {
+			return cli.Usage("release create: %v", err)
+		}
+	}
+	multi := len(platforms) > 1
+	if multi && (!c.Bool("build") || !c.Bool("push")) {
+		return cli.Usage("release create: multi-architecture images (%s) are built and pushed in one step: pass --build --push", strings.Join(platforms, ", "))
+	}
+	s, err := deploy.Open(m, deploy.Options{Verb: "release create", Target: "docker", NoHooks: c.Bool("no-hooks")})
 	if err != nil {
 		return err
 	}
-	images := map[string]any{}
+	images, ids := map[string]any{}, map[string]any{}
+	if multi && !c.Bool("dry-run") {
+		if err := s.RunHooks("pre_build"); err != nil {
+			return err
+		}
+		if m, err = descriptor.Load(m.Found); err != nil {
+			return err
+		}
+		res, err := build.Run(m, build.Options{Platforms: platforms, Push: registry})
+		if err != nil {
+			return err
+		}
+		s.Tags = map[string]string{}
+		for _, img := range res.Images {
+			if img.Pushed == "" {
+				continue
+			}
+			images[img.Repo] = img.Pushed
+			s.Tags[img.Repo] = img.Tag
+			verb := "pushed"
+			if img.Cached {
+				verb = "already in the registry:"
+			}
+			ui.Sub("%s %s", verb, img.Pushed)
+		}
+		ui.OK("built %d multi-architecture image(s) for %s", len(images), strings.Join(platforms, ", "))
+	} else if c.Bool("build") && !c.Bool("dry-run") {
+		if err := s.RunHooks("pre_build"); err != nil {
+			return err
+		}
+		if m, err = descriptor.Load(m.Found); err != nil {
+			return err
+		}
+		res, err := build.Run(m, build.Options{Platforms: platforms})
+		if err != nil {
+			return err
+		}
+		deploy.RecordTags(m.State, res.Tags)
+		s.Tags = res.Tags
+		ui.OK("built %d image(s)", len(res.Images))
+	}
 	missing := 0
-	for repo, tag := range s.Tags {
-		ref := repo + ":" + tag
+	repos := make([]string, 0, len(s.Tags))
+	for repo := range s.Tags {
+		if multi {
+			break // already pushed by digest
+		}
+		repos = append(repos, repo)
+	}
+	sort.Strings(repos)
+	for _, repo := range repos {
+		ref := repo + ":" + s.Tags[repo]
 		id, err := sh.Output("docker", "image", "inspect", "--format", "{{.Id}}", ref)
 		if err != nil {
 			missing++
 			continue
 		}
-		images[repo] = ref + "@" + id
+		ids[repo] = id
+		images[repo] = ref
+		if !c.Bool("push") || c.Bool("dry-run") {
+			continue
+		}
+		pushed, err := pushImage(ref, registry+"/"+repo, s.Tags[repo], version)
+		if err != nil {
+			return err
+		}
+		images[repo] = pushed
+		ui.Sub("pushed %s", pushed)
 	}
 	if len(images) == 0 {
-		return fmt.Errorf("no built images recorded yet — run `axon up --build` (or `axon cluster build <app>`) first")
+		return fmt.Errorf("no built images recorded yet — run `axon up --build`, or `axon release create --build`")
 	}
 	in := s.Input()
 	modules, sources, fabric, cores := map[string]any{}, map[string]any{}, map[string]any{}, map[string]any{}
@@ -269,8 +357,9 @@ func runReleaseCreate(c *cli.Ctx) error {
 		"by":             by,
 		"commit":         gitHead(m.Dir),
 		"tool_version":   "axon/" + Version,
-		"platforms":      []any{"linux/" + buildArch()},
+		"platforms":      recordPlatforms(platforms),
 		"images":         images,
+		"image_ids":      ids,
 		"modules":        modules,
 		"cores":          cores,
 		"fabric":         fabric,
@@ -278,6 +367,9 @@ func runReleaseCreate(c *cli.Ctx) error {
 	}
 	if m.C.CoreImage != "" {
 		doc["core_image"] = m.SubstImage(m.C.CoreImage)
+	}
+	if registry != "" && c.Bool("push") {
+		doc["registry"] = registry
 	}
 	text := release.Render(doc)
 	if c.Bool("dry-run") {
@@ -305,6 +397,17 @@ func runReleaseCreate(c *cli.Ctx) error {
 	ui.OK("release %s → %s (%d images, %d sources)", version, rel2(m.Dir, p), len(images), len(sources))
 	ui.Out("%s", release.Digest(doc))
 	return nil
+}
+
+func recordPlatforms(ps []string) []any {
+	if len(ps) == 0 {
+		return []any{"linux/" + buildArch()}
+	}
+	out := make([]any, len(ps))
+	for i, p := range ps {
+		out[i] = p
+	}
+	return out
 }
 
 func buildArch() string {
@@ -443,3 +546,36 @@ func runReleaseCheckout(c *cli.Ctx) error {
 	}
 	return nil
 }
+
+// pushImage tags ref as <target>:<tag> and <target>:<version>, pushes both and
+// returns the pullable digest reference <target>@sha256:….
+func pushImage(ref, target, tag, version string) (string, error) {
+	var digest string
+	for _, t := range []string{tag, version} {
+		dst := target + ":" + t
+		if _, err := sh.Run(sh.Cmd{Name: "docker", Args: []string{"tag", ref, dst}}); err != nil {
+			return "", err
+		}
+		r, err := sh.Run(sh.Cmd{Name: "docker", Args: []string{"push", dst}, Timeout: 30 * time.Minute})
+		if err != nil {
+			return "", fmt.Errorf("push %s (logged in? `docker login %s`): %w", dst, strings.SplitN(target, "/", 2)[0], err)
+		}
+		if m := digestRE.FindStringSubmatch(r.Stdout); m != nil {
+			digest = m[1]
+		}
+	}
+	if digest == "" {
+		out, err := sh.Output("docker", "image", "inspect", "--format", "{{range .RepoDigests}}{{println .}}{{end}}", target+":"+tag)
+		if err == nil {
+			for _, l := range strings.Fields(out) {
+				if strings.HasPrefix(l, target+"@") {
+					return l, nil
+				}
+			}
+		}
+		return "", fmt.Errorf("pushed %s but could not read its digest", target)
+	}
+	return target + "@" + digest, nil
+}
+
+var digestRE = regexp.MustCompile(`digest: (sha256:[0-9a-f]{64})`)

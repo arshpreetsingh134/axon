@@ -200,6 +200,9 @@ func (s *Session) psql(db, sql string) (string, error) {
 // ensureDatabases creates every logical database that is missing (idempotent).
 func (s *Session) ensureDatabases() error {
 	dbs := gen.Databases(s.M)
+	if len(dbs) == 0 {
+		return nil
+	}
 	if s.DryRun {
 		ui.Sub("would ensure databases: %s", strings.Join(dbs, ", "))
 		return nil

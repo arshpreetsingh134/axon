@@ -360,6 +360,153 @@ key := os.Getenv("OPENROUTER_API_KEY")   // injected on every deploy
 - **Tracing:** Tempo and Grafana, with OpenTelemetry settings injected into every service.
 - **Workflows:** Temporal, with a UI at `temporal.<domain>`.
 
+### A CI pipeline generated from your descriptor
+`axon ci init` writes `.github/workflows/axon-ci.yml` for your project. It has two jobs:
+- **`check`** (fast, no containers): verifies the pipeline itself is current (`axon ci check`), then runs
+  `cluster check`, `env check` and every app's unit tests.
+- **`e2e`**: deploys the whole stack on the runner with `axon up --build`, runs `axon env test`, prints diagnostics
+  and container logs if anything fails, and always tears down.
+
+More details:
+- **Member apps in other repositories:** `ci init` detects them once and records the repositories to check out in
+  `axon.toml` under `[ci.checkouts]`. Apps that are symlinks into another checkout (a monorepo subdirectory, say)
+  are recorded under `[ci.links]`, and so are modules that link into a sibling repository. The workflow rebuilds the
+  same workspace on the runner, using `AXON_REPOS_TOKEN` for private repositories. `ci init --redetect` starts over.
+- **Secrets:** every `${VAR}` your apps reference is passed from a same-named GitHub secret, and `ci init` prints
+  the list.
+- **Drift:** the output is deterministic, so `axon ci check` (locally, or as the pipeline's first step) fails when
+  the descriptor has changed and the workflow wasn't regenerated.
+
+```toml
+[ci]                                   # in the axonfile or axon.toml; every key is optional
+branches     = ["main"]                # push branches that run the pipeline (pull requests always do)
+runner       = "ubuntu-latest"
+e2e          = true                    # deploy + journeys on the runner
+apps         = ["acme.web"]            # deploy only these apps in e2e (default: all)
+app_tests    = true
+hooks        = true                    # run lifecycle hooks in CI
+env          = "ci"                    # created by `ci init` if missing (Docker target)
+axon_version = "latest"                # axon release the runner installs
+
+[ci.checkouts]                         # written by `ci init`; workspace path = "owner/repo[@ref]"
+"acme.web"              = "acme/web@main"
+".axon-ci/acme__mono"   = "acme/mono@main"
+
+[ci.links]                             # app dir = where it points inside a checkout
+"acme.api" = ".axon-ci/acme__mono/apps/acme.api"
+```
+
+### Releases to a registry
+Set a registry, and releases become deployable anywhere:
+
+```toml
+[release]
+registry = "ghcr.io/your-org"
+```
+
+- **`axon release create --build --push`:** builds every app, pushes each image to the registry and records it
+  by **digest** (`ghcr.io/your-org/<image>@sha256:…`) in `releases/<version>.toml`.
+  `axon env deploy <env> <version>` then deploys exactly those images, pulling them from the registry.
+- **`axon ci init`** also writes `.github/workflows/axon-release.yml`. On every `v*` tag it does the same on GitHub's
+  runners, then attaches the release record to the GitHub Release. `axon release cut` triggers it.
+- **`axon ci secrets`:** lists every secret the pipelines read, whether GitHub already has it, and where its value
+  would come from on your machine (axon secrets, then `.env`, then your environment). `--set` uploads the missing
+  ones, encrypted with the repository's key and never printed.
+
+**Multi-architecture images:** list more than one platform and every image is built for all of them with
+`docker buildx` and pushed as one multi-architecture image. Go module servers are cross-compiled on the host once
+per architecture, so only the thin runtime layers run under emulation. Images whose tag (an input hash) is already
+in the registry are not rebuilt. The release workflow sets up QEMU and Buildx automatically.
+
+```toml
+[release]
+registry  = "ghcr.io/your-org"
+platforms = ["linux/amd64", "linux/arm64"]   # or: axon release create --build --push --platform linux/arm64
+```
+
+Locally, multi-platform builds need a builder that supports them (`docker buildx create --use`, or Docker's
+containerd image store).
+
+**Registry credentials:** for GHCR, the workflow's own token can push to your namespace. To also pull private base
+images, add an `AXON_GHCR_TOKEN` secret holding a token with `read:packages` (and `write:packages`). Other registries
+use `AXON_REGISTRY_USERNAME` / `AXON_REGISTRY_PASSWORD`.
+
+### Deploys and environment promotion
+Mark an environment as deployed from CI, and say how to reach its cluster. `axon ci init` then writes
+`.github/workflows/axon-deploy.yml`, with one job per environment, each bound to a GitHub Environment of the same
+name:
+
+```toml
+# environments/staging.toml
+name          = "staging"
+target        = "k8s"
+[cloud]
+provider      = "eks"                       # eks | gke | aks | kubeconfig
+cluster       = "acme-staging"
+region        = "eu-west-1"
+role_arn      = "arn:aws:iam::123456789012:role/github-deploy"
+[ci]
+deploy        = true
+auto          = true                        # deploy every successful release
+
+# environments/prod.toml
+name          = "prod"
+target        = "k8s"
+promotes_from = "staging"                   # runs after staging succeeds…
+[cloud]
+provider      = "kubeconfig"                # a KUBECONFIG secret in the prod GitHub Environment
+[ci]
+deploy        = true
+reviewers     = ["your-login", "acme/ops"]  # …and waits for one of them to approve
+wait_minutes  = 10
+url           = "https://acme.example"
+```
+
+When a release succeeds, each job:
+1. checks out the tagged project and its member repositories;
+2. signs in to the cloud with OIDC, so no long-lived keys are stored;
+3. downloads the release record and pins every app to its released commit;
+4. runs `axon env deploy <env> <version>`, pulling the release's images by digest; a pull secret for the registry
+   is created in the namespace;
+5. runs the journeys, and on failure prints pods and events.
+
+Any environment can also be deployed by hand from the Actions tab (*Run workflow* → environment + version).
+
+Each provider needs these `[cloud]` keys:
+- **eks:** `cluster`, `region`, `role_arn`.
+- **gke:** `cluster`, `location`, `project`, `workload_identity_provider`, `service_account`.
+- **aks:** `cluster`, `resource_group`, `client_id`, `tenant_id`, `subscription_id`.
+- **kubeconfig:** nothing; the whole kubeconfig is an Environment secret.
+
+```bash
+axon ci environments                  # the GitHub Environments the pipeline uses, and whether they exist
+axon ci environments --apply          # create them with reviewers, wait timer and allowed branches
+axon ci secrets --kubeconfig ~/.kube/prod.yaml --set   # repository secrets + each Environment's KUBECONFIG
+```
+
+### CI and releases from the terminal
+These commands work in any GitHub repository, with or without an `axonfile`:
+
+```bash
+axon ci status              # every workflow and job for the current commit, with durations and links
+axon ci watch               # wait for CI, printing each job as it finishes (exit 1 on failure)
+axon ci logs --failed       # only the failing step of each failed job, without runner noise
+axon release cut            # next vX.Y.Z tag once CI is green, then follow the release pipeline
+axon release cut --bump minor --dry-run
+```
+
+`release cut` checks that:
+- tracked files have no uncommitted changes;
+- every commit is pushed;
+- CI is green on `HEAD`; if CI is still running, it waits.
+
+Then it creates an annotated tag, pushes it, and follows the workflow the tag triggers until a GitHub Release
+exists.
+
+**Which GitHub account it uses:** `AXON_GITHUB_TOKEN` / `GITHUB_TOKEN` / `GH_TOKEN` if set. Otherwise it asks the
+GitHub CLI for the account that owns the repository, so a machine signed in to both a work and a personal account
+uses the right one without switching. Only then does it fall back to the CLI's active account.
+
 ### Lifecycle hooks
 Run your own scripts at `pre_generate`, `pre_build`, `post_build`, `post_fabric`,
 `post_deploy`, `pre_down` and `post_down`. Typical uses are linking sources before a build,
@@ -458,7 +605,8 @@ Run `axon <verb> --help` for every flag of a verb.
 | **Project** | `cluster new` · `cluster add app\|ext\|fabric\|product` · `cluster remove …` · `cluster set k=v` · `cluster check` · `cluster explain` · `cluster generate [--check\|--diff]` · `cluster build <app>` · `cluster ports` |
 | **Apps** | `app new` · `app add module` · `app remove module` · `app set` · `app check [--fix]` · `app build` · `app run` · `app test` |
 | **Environments** | `env new` · `env list` · `env show` · `env set` · `env unset` · `env check` · `env plan` · `env deploy` · `env undeploy` · `env status [--json\|--watch]` · `env logs` · `env restart` · `env test` · `env diagnose` · `env iam-keys` · `env rotate-iam-key` |
-| **Releases** | `release create` · `release list` · `release show` · `release check` · `release lock` · `release checkout` |
+| **Releases** | `release cut [--bump patch\|minor\|major]` · `release create [--build] [--push]` · `release list` · `release show` · `release check` · `release lock` · `release checkout` |
+| **CI** | `ci init [--dry-run]` · `ci check [--diff]` · `ci secrets [--set]` · `ci status [--json]` · `ci watch` · `ci logs [--failed] [--run ID] [--job NAME]` |
 | **Secrets** | `secrets set <NAME>` · `secrets list` · `secrets rm` · `secrets import [--remove]` · `secrets exec -- <cmd>` |
 | **Tooling** | `version` · `completion bash\|zsh\|fish` |
 
@@ -490,6 +638,7 @@ carries a single JSON document, which makes axon easy to script.
 | Variable | Effect |
 |---|---|
 | `XDG_CONFIG_HOME` | Where per-user state lives (default `~/.config`) |
+| `AXON_GITHUB_TOKEN`, `GITHUB_TOKEN`, `GH_TOKEN` | GitHub token for `ci` and `release cut` (otherwise taken from the GitHub CLI) |
 | `AXON_TARGET` | Default deploy target, `docker` or `k8s` (a flag or the environment file wins over it) |
 | `NO_COLOR` / `AXON_NO_COLOR` | Disable colored output |
 | `KUBECONFIG` | Passed through to `kubectl` |

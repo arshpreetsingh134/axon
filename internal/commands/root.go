@@ -42,6 +42,8 @@ func Registry() *cli.Registry {
 	r.Add(envVerbs()...)
 	r.Add(releaseVerbs()...)
 	r.Add(secretsVerbs()...)
+	r.Add(ciVerbs()...)
+	r.Add(ciGenVerbs()...)
 	// mycel's moved names keep working
 	r.AddMoved(&cli.Moved{Old: "platform apply", New: "env deploy"})
 	r.AddMoved(&cli.Moved{Old: "platform destroy", New: "env undeploy"})

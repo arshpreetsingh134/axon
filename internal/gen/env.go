@@ -38,6 +38,9 @@ type Input struct {
 	PG     PG
 	// Images maps an image repo (no tag) to the tag to deploy (content hash);
 	// unset repos deploy ":latest".
+	// Refs maps an image repo to a full registry reference (a release deploy:
+	// "ghcr.io/owner/repo@sha256:…"); it wins over Tags.
+	Refs map[string]string
 	Tags map[string]string
 }
 
@@ -48,6 +51,9 @@ func (in *Input) Source() string {
 
 // Image returns repo:tag for a built image.
 func (in *Input) Image(repo string) string {
+	if r := in.Refs[repo]; r != "" {
+		return r
+	}
 	if t, ok := in.Tags[repo]; ok && t != "" {
 		return repo + ":" + t
 	}
@@ -61,6 +67,9 @@ func (in *Input) ResolveRef(ref string) string {
 	repo := ref
 	if i := strings.LastIndex(ref, ":"); i > strings.LastIndex(ref, "/") {
 		repo = ref[:i]
+	}
+	if r := in.Refs[repo]; r != "" {
+		return r
 	}
 	if t, ok := in.Tags[repo]; ok && t != "" && !strings.Contains(ref, "@") {
 		return repo + ":" + t
