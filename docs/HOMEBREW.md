@@ -67,7 +67,7 @@ Watch the `release` workflow in the Actions tab. When it finishes, the tap has
 ```bash
 brew install <owner>/tap/axon
 brew upgrade axon
-axon --version     # axon 0.1.0 — built from <sha> at <time>
+axon --version     # axon 0.1.0, then commit, build date and Go version
 ```
 
 The formula installs the binary and the bash, zsh and fish completions.

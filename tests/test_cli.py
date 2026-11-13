@@ -30,7 +30,12 @@ MOVED = {
     "add-fabric": "cluster add fabric",
 }
 
-VERSION_RE = re.compile(r"^axon \S+ — built from \S+ at \d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z\n$")
+VERSION_RE = re.compile(
+    r"^axon \S+\n"
+    r"  commit   \S+\n"
+    r"  built    (\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} UTC|unknown)\n"
+    r"  go       go\S+ \w+/\w+\n$"
+)
 
 
 def verbs_in_root_help(text):

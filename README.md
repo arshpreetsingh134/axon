@@ -189,7 +189,7 @@ The binary must be in a directory listed in `PATH`. The steps above use `~/.loca
 Open a new terminal, then verify:
 
 ```bash
-axon version          # axon 0.1.0 — built from <commit> at <date>
+axon version          # axon 0.1.0, then its commit, build date and Go version
 axon app check        # toolchain table: go, node, npm, docker, kubectl, git
 ```
 

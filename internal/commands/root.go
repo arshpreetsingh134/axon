@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"time"
 
 	"axon/internal/cli"
@@ -101,12 +102,21 @@ func loadCluster(c *cli.Ctx, dir string) (*descriptor.Model, error) {
 	return m, nil
 }
 
+// versionString renders the version on the first line and build details below:
+//
+//	axon 0.1.0
+//	  commit   18909621bf10
+//	  built    2026-11-13 12:05:31 UTC
+//	  go       go1.26.3 darwin/arm64
 func versionString() string {
-	date := Date
-	if date == "" {
+	built := Date
+	if t, err := time.Parse(time.RFC3339, Date); err == nil {
+		built = t.UTC().Format("2006-01-02 15:04:05 MST")
+	} else if built == "" {
+		built = "unknown"
 		if exe, err := os.Executable(); err == nil {
 			if st, err := os.Stat(exe); err == nil {
-				date = st.ModTime().UTC().Format(time.RFC3339)
+				built = st.ModTime().UTC().Format("2006-01-02 15:04:05 MST")
 			}
 		}
 	}
@@ -114,15 +124,25 @@ func versionString() string {
 	if len(commit) > 12 {
 		commit = commit[:12]
 	}
-	return fmt.Sprintf("axon %s — built from %s at %s", Version, commit, date)
+	if commit == "" {
+		commit = "unknown"
+	}
+	return fmt.Sprintf("axon %s\n  commit   %s\n  built    %s\n  go       %s %s/%s",
+		Version, commit, built, runtime.Version(), runtime.GOOS, runtime.GOARCH)
 }
 
 func topVerbs() []*cli.Verb {
 	return []*cli.Verb{
-		{Name: "version", Summary: "print the version", Group: "general", Run: func(c *cli.Ctx) error {
-			ui.Out("%s", versionString())
-			return nil
-		}},
+		{Name: "version", Summary: "print the version and build details (--short: the version only)", Group: "general",
+			Flags: []cli.Flag{{Name: "short", Kind: cli.Bool, Usage: "print only the version number (for scripts)"}},
+			Run: func(c *cli.Ctx) error {
+				if c.Bool("short") {
+					ui.Out("%s", Version)
+					return nil
+				}
+				ui.Out("%s", versionString())
+				return nil
+			}},
 		{Name: "completion", Args: []cli.Arg{{Name: "shell"}}, Group: "general",
 			Summary: "print a shell completion script (bash, zsh or fish), generated from the verb registry",
 			Help:    "Print a completion script generated from the live verb registry.\n  bash: source <(axon completion bash)\n  zsh:  axon completion zsh > \"${fpath[1]}/_axon\"\n  fish: axon completion fish > ~/.config/fish/completions/axon.fish",
