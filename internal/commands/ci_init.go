@@ -21,10 +21,14 @@ import (
 func ciGenVerbs() []*cli.Verb {
 	return []*cli.Verb{
 		{Name: "ci init", Group: "ci",
-			Summary: "generate the GitHub Actions pipeline (.github/workflows/axon-ci.yml) from the descriptor",
-			Help: "Generate the CI pipeline from the descriptor and [ci] settings: a fast `check` job (pipeline drift, cluster check, " +
+			Summary: "generate the GitHub Actions pipelines (CI, release, deploy) from the descriptor and environment files",
+			Help: "Generate .github/workflows/axon-ci.yml from the descriptor and [ci] settings: a fast `check` job (pipeline drift, cluster check, " +
 				"env check, every app's unit tests) and an `e2e` job that deploys the whole stack on the runner with `axon up --build`, " +
-				"runs `axon env test`, prints diagnostics on failure and always tears down. Member apps that live in other repositories " +
+				"runs `axon env test`, prints diagnostics on failure and always tears down. With [release] registry set, also " +
+				"axon-release.yml: on every v* tag it builds, pushes (multi-architecture with [release] platforms) and records the " +
+				"release, then attaches the record to the GitHub Release. Environment files with [ci] deploy = true and a [cloud] " +
+				"section (eks, gke, aks or kubeconfig) add axon-deploy.yml: one job per environment, bound to a GitHub Environment, " +
+				"deployed after each release (auto = true), after the environment it promotes_from, or by hand. Member apps that live in other repositories " +
 				"are detected once and recorded under [ci.checkouts] (and [ci.links] for apps that are symlinks into a checkout) in axon.toml, so the generated file is reproducible; a `ci` environment " +
 				"(Docker target) is created if missing. Rerun after changing the descriptor; `axon ci check` reports drift.",
 			Flags: []cli.Flag{flagDir, flagDryRun, {Name: "redetect", Kind: cli.Bool, Usage: "re-detect member app repositories, replacing [ci.checkouts] and [ci.links]"}},

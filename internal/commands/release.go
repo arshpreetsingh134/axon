@@ -28,7 +28,13 @@ func releaseVerbs() []*cli.Verb {
 		{Name: "release show", Args: []cli.Arg{{Name: "version"}}, Group: "release", Summary: "show a release record", Flags: []cli.Flag{flagDir, flagJSON}, Run: runReleaseShow},
 		{Name: "release check", Args: []cli.Arg{{Name: "version", Optional: true}}, Group: "release", Summary: "verify release digests (all releases when no version is given)",
 			Flags: []cli.Flag{flagDir, flagJSON}, Run: runReleaseCheck},
-		{Name: "release create", Group: "release", Summary: "record an immutable release from the last build: image refs, source commits, digest",
+		{Name: "release create", Group: "release", Summary: "record an immutable release from the last build (or --build): image refs, source commits, digest; --push publishes to a registry",
+			Help: "Write releases/<version>.toml: every image, the source commit of every app, the platform images, sealed by a " +
+				"SHA-256 digest. Without --push the record names local images (deployable on this machine). With --push every image " +
+				"goes to the registry ([release] registry or --registry, e.g. ghcr.io/owner) and is recorded by digest, so " +
+				"`axon env deploy <env> <version>` works on any cluster. Several platforms ([release] platforms or --platform " +
+				"linux/amd64,linux/arm64) build multi-architecture images with docker buildx; they need --build --push. " +
+				"Images whose tag is already in the registry are not rebuilt.",
 			Flags: []cli.Flag{flagDir, {Name: "version", Kind: cli.String, Usage: "version (default: next patch of the series)"},
 				{Name: "series", Kind: cli.String, Usage: "series (default release/policy.toml series)"},
 				{Name: "build", Kind: cli.Bool, Usage: "build every app first (runs pre_build hooks unless --no-hooks)"},

@@ -35,7 +35,7 @@ func Registry() *cli.Registry {
 		{Name: "no-color", Kind: cli.Bool, Usage: "disable color (also NO_COLOR)"},
 		{Name: "compat", Kind: cli.String, Value: "<mode>", Usage: "auto (default): axon files, else mycel files · mycel: prefer and scaffold mycel names · off: ignore mycel files (also AXON_COMPAT)"},
 	}
-	r.Common = []string{"up", "down", "cluster new", "cluster add app", "cluster check", "app new", "env status", "env logs", "env test", "release create"}
+	r.Common = []string{"up", "down", "cluster new", "cluster add app", "cluster check", "app new", "env status", "env logs", "env test", "secrets set", "ci init", "release cut"}
 	r.Add(topVerbs()...)
 	r.Add(clusterVerbs()...)
 	r.Add(appVerbs()...)

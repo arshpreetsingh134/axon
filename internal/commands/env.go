@@ -88,7 +88,12 @@ func envVerbs() []*cli.Verb {
 			Run: runEnvDiagnose},
 		{Name: "env deploy", Args: []cli.Arg{{Name: "env"}, {Name: "release", Optional: true}}, Group: "env",
 			Summary: "deploy an environment: generate, (build), fabric, databases, Keycloak, apps, seed, verify",
-			Flags:   deployFlags, Run: runEnvDeploy},
+			Help: "Deploy an environment end to end. With a <release> (a version in releases/), deploy exactly the images it " +
+				"records: images recorded by registry digest are pulled from the registry. On Kubernetes, setting " +
+				"AXON_PULL_REGISTRY, AXON_PULL_USERNAME and AXON_PULL_PASSWORD creates an image pull secret that every " +
+				"workload uses (the generated deploy pipeline sets them). ${VAR} values come from the axon secret store, " +
+				"then .env, then the process environment.",
+			Flags: deployFlags, Run: runEnvDeploy},
 		{Name: "env plan", Args: envArg, Group: "env", Summary: "show what `env deploy` would do (same as --dry-run)",
 			Flags: deployFlags, Run: func(c *cli.Ctx) error { return deployLike(c, "env plan", c.Arg(0), true) }},
 		{Name: "env undeploy", Args: envArg, Group: "env", Summary: "tear an environment down (data volumes are kept unless --volumes)",

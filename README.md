@@ -27,8 +27,11 @@ running platform. That platform includes:
 
 axon builds only what changed, starts everything in the right order, wires every service
 to the others, keeps secrets out of your files, waits until everything is actually
-healthy, and prints the URLs. You don't write Dockerfiles for the platform pieces,
-Compose files, Kubernetes manifests or deploy scripts. It is built for developers who
+healthy, and prints the URLs. The same descriptor also generates your GitHub Actions
+pipelines: CI on every push, releases pushed to a registry (multi-architecture if you
+like) on every tag, and deploys to your Kubernetes clusters with approvals between
+environments. You don't write Dockerfiles for the platform pieces, Compose files,
+Kubernetes manifests, deploy scripts or CI workflows. It is built for developers who
 want production-shaped environments **without becoming DevOps engineers**.
 
 ---
@@ -61,6 +64,8 @@ want production-shaped environments **without becoming DevOps engineers**.
 | A deploy "succeeds" but the app is broken | axon waits until every app and module reports healthy and checks every URL |
 | Port clashes between projects on one laptop | Free host ports are allocated per project and recorded, so projects never collide |
 | A wiki page of manual post-deploy steps | Lifecycle hooks run your scripts at the right moment of every deploy |
+| Hand-written CI/CD YAML that drifts from how you deploy locally | `axon ci init` generates CI, release and deploy workflows from the same descriptor; `axon ci check` catches drift |
+| Copying API keys into CI settings by hand | `axon ci secrets --set` uploads exactly the secrets the pipelines need, encrypted, never printed |
 
 ---
 
@@ -270,9 +275,9 @@ edits.
 | **Project (cluster)** | A controller directory, `<name>.axon/`. Its descriptor is `.axon.infra/axonfile`. Each app lives in a sibling directory. |
 | **Platform services (fabric)** | Shared infrastructure that axon runs for you: **Postgres** (required), **Traefik** (the front door), **Keycloak** (single sign-on), **Temporal** (workflows), **Tempo + Grafana** (tracing), **ClickHouse** (analytics). Declare only what you need. |
 | **App** | A member service with its own descriptor. There are three kinds:<ul><li>`module` (default): a core host that composes modules. Each module is a server, a UI bundle and its own Postgres schema.</li><li>`iam`: the identity app.</li><li>`project`: anything with a Dockerfile, or a prebuilt image, such as workers, APIs or web frontends.</li></ul> |
-| **Environment** | `environments/<env>.toml` holds the target (`docker` or `k8s`), namespace, kube context, Postgres mode and release. `dev` works without a file. Per-environment overrides go in `<env>.overrides.toml`. |
-| **Release** | `releases/<version>.toml`: an immutable, digest-sealed record of every image and source commit, deployable as-is with `axon env deploy <env> <version>`. |
-| **Overlay** | `.axon.infra/axon.toml` holds deploy defaults, hooks, image substitutions and things to skip. It is kept separate from the descriptor. |
+| **Environment** | `environments/<env>.toml` holds the target (`docker` or `k8s`), namespace, kube context, Postgres mode and release. `dev` works without a file. Per-environment overrides go in `<env>.overrides.toml`. With `[ci] deploy = true` and a `[cloud]` section, CI deploys it (see [Deploys and environment promotion](#deploys-and-environment-promotion)). |
+| **Release** | `releases/<version>.toml`: an immutable, digest-sealed record of every image and source commit, deployable as-is with `axon env deploy <env> <version>`. With a registry, images are recorded by registry digest, so a release deploys on any cluster. |
+| **Overlay** | `.axon.infra/axon.toml` holds deploy defaults, hooks, image substitutions, things to skip, and the `[ci]` and `[release]` settings. It is kept separate from the descriptor. |
 
 ---
 
@@ -526,7 +531,10 @@ seeding data, or running smoke tests after a deploy. Hooks receive `AXON_CLUSTER
 
 ### Releases
 - **`axon release create`:** records image IDs, source commits and platform images in a
-  record sealed by a SHA-256 digest.
+  record sealed by a SHA-256 digest. With `--push`, images are pushed to a registry and
+  recorded by digest (see [Releases to a registry](#releases-to-a-registry)).
+- **`axon release cut`:** tags the next version once CI is green and follows the release
+  pipeline.
 - **`axon release check`:** detects any edit to a record.
 - **`axon env deploy <env> <version>`:** deploys exactly what was recorded.
 - **`axon release lock` / `axon release checkout`:** pin, and later restore, the source
@@ -605,8 +613,8 @@ Run `axon <verb> --help` for every flag of a verb.
 | **Project** | `cluster new` · `cluster add app\|ext\|fabric\|product` · `cluster remove …` · `cluster set k=v` · `cluster check` · `cluster explain` · `cluster generate [--check\|--diff]` · `cluster build <app>` · `cluster ports` |
 | **Apps** | `app new` · `app add module` · `app remove module` · `app set` · `app check [--fix]` · `app build` · `app run` · `app test` |
 | **Environments** | `env new` · `env list` · `env show` · `env set` · `env unset` · `env check` · `env plan` · `env deploy` · `env undeploy` · `env status [--json\|--watch]` · `env logs` · `env restart` · `env test` · `env diagnose` · `env iam-keys` · `env rotate-iam-key` |
-| **Releases** | `release cut [--bump patch\|minor\|major]` · `release create [--build] [--push]` · `release list` · `release show` · `release check` · `release lock` · `release checkout` |
-| **CI** | `ci init [--dry-run]` · `ci check [--diff]` · `ci secrets [--set]` · `ci status [--json]` · `ci watch` · `ci logs [--failed] [--run ID] [--job NAME]` |
+| **Releases** | `release cut [--bump patch\|minor\|major]` · `release create [--build] [--push] [--registry R] [--platform P,…]` · `release list` · `release show` · `release check` · `release lock` · `release checkout` |
+| **CI/CD** | `ci init [--dry-run] [--redetect]` · `ci check [--diff]` · `ci secrets [--set] [--kubeconfig F]` · `ci environments [--apply]` · `ci status [--json]` · `ci watch` · `ci logs [--failed] [--run ID] [--job NAME]` |
 | **Secrets** | `secrets set <NAME>` · `secrets list` · `secrets rm` · `secrets import [--remove]` · `secrets exec -- <cmd>` |
 | **Tooling** | `version` · `completion bash\|zsh\|fish` |
 
@@ -639,6 +647,7 @@ carries a single JSON document, which makes axon easy to script.
 |---|---|
 | `XDG_CONFIG_HOME` | Where per-user state lives (default `~/.config`) |
 | `AXON_GITHUB_TOKEN`, `GITHUB_TOKEN`, `GH_TOKEN` | GitHub token for `ci` and `release cut` (otherwise taken from the GitHub CLI) |
+| `AXON_PULL_REGISTRY`, `AXON_PULL_USERNAME`, `AXON_PULL_PASSWORD` | Registry credentials for Kubernetes deploys: axon creates an image pull secret and every workload uses it (the deploy pipeline sets them) |
 | `AXON_TARGET` | Default deploy target, `docker` or `k8s` (a flag or the environment file wins over it) |
 | `NO_COLOR` / `AXON_NO_COLOR` | Disable colored output |
 | `KUBECONFIG` | Passed through to `kubectl` |
@@ -649,7 +658,8 @@ carries a single JSON document, which makes axon easy to script.
 | Path | Committed? | Purpose |
 |---|---|---|
 | `.axon.infra/axonfile` | yes | The descriptor (source of truth) |
-| `.axon.infra/axon.toml` | yes | Deploy defaults, hooks, image substitutions |
+| `.axon.infra/axon.toml` | yes | Deploy defaults, hooks, image substitutions, `[ci]` and `[release]` settings |
+| `.github/workflows/axon-*.yml` | yes | Generated by `axon ci init` (CI, release, deploy); `axon ci check` reports drift |
 | `.axon.infra/.env` | **no** | Secret values (`${VAR}` references). Prefer `axon secrets`, which keeps them in the cluster instead of a file |
 | `.axon.infra/secrets/` | **no** | The identity signing key |
 | `environments/*.toml` | yes | Environments and their overrides |
@@ -671,6 +681,10 @@ carries a single JSON document, which makes axon easy to script.
 | `ENV_VALUE_MISSING` | Add the reported key to `.axon.infra/.env`. |
 | `*.lvh.me` doesn't resolve while offline | Set `domain = "localhost"`. Browsers resolve `*.localhost` to your machine. |
 | A deploy hangs on one app | Run `axon env logs <env> <app> --follow`. With `-v`, axon prints every command it runs. |
+| `axon ci check` fails on CI | The descriptor, `axon.toml` or an environment file changed after the workflows were generated. Run `axon ci init` and commit the result. |
+| `Multi-platform build is not supported` | Create a builder that supports it: `docker buildx create --use` (CI sets one up automatically). |
+| `ci environments --apply` fails on reviewers | GitHub allows required reviewers on private repositories only with a paid plan. Remove `reviewers`, or make the repository public. |
+| A CI deploy can't pull images (`ImagePullBackOff`) | For GHCR, give `AXON_GHCR_TOKEN` `read:packages`; for other registries, set `AXON_REGISTRY_USERNAME` / `AXON_REGISTRY_PASSWORD`. |
 
 ---
 
