@@ -95,7 +95,7 @@ func ToolchainFindings(target string) []Finding {
 	var out []Finding
 	if !sh.Has("docker") {
 		out = append(out, Finding{ID: "TOOLCHAIN_DOCKER_MISSING", Concern: "toolchain", Severity: "blocking", Subject: "docker", Cause: "docker is not on PATH", Fix: "install Docker Desktop or OrbStack"})
-	} else if _, err := sh.Run(sh.Cmd{Name: "docker", Args: []string{"info", "--format", "{{.ServerVersion}}"}, Timeout: 15 * time.Second}); err != nil {
+	} else if r, err := sh.Run(sh.Cmd{Name: "docker", Args: []string{"info", "--format", "{{.ServerVersion}}"}, Timeout: 15 * time.Second}); err != nil || strings.TrimSpace(r.Stdout) == "" {
 		out = append(out, Finding{ID: "TOOLCHAIN_DOCKER_DAEMON_DOWN", Concern: "toolchain", Severity: "blocking", Subject: "docker", Cause: "the docker daemon does not answer", Fix: "start Docker/OrbStack"})
 	}
 	if target == "k8s" {

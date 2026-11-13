@@ -45,11 +45,19 @@ func (s *Session) composeRunning(project string) bool {
 	return err == nil && strings.TrimSpace(out) != ""
 }
 
+// DaemonUp reports whether the docker daemon answers. Some docker CLI versions exit 0
+// when the daemon is unreachable and print an empty server version, so both the
+// exit code and the version are checked.
+func DaemonUp() bool {
+	r, err := sh.Run(sh.Cmd{Name: "docker", Args: []string{"info", "--format", "{{.ServerVersion}}"}, Timeout: 20 * time.Second})
+	return err == nil && strings.TrimSpace(r.Stdout) != ""
+}
+
 func (s *Session) dockerPreflight() error {
 	if !sh.Has("docker") {
 		return fmt.Errorf("docker is not installed (TOOLCHAIN_DOCKER_MISSING)")
 	}
-	if _, err := sh.Run(sh.Cmd{Name: "docker", Args: []string{"info", "--format", "{{.ServerVersion}}"}, Timeout: 20 * time.Second}); err != nil {
+	if !DaemonUp() {
 		return fmt.Errorf("the docker daemon is not reachable (TOOLCHAIN_DOCKER_DAEMON_DOWN): start Docker/OrbStack and retry")
 	}
 	if s.composeRunning(s.fabricProject()) {
