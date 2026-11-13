@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "axon-tests"
+version = "0.1.0"
+description = "Black-box acceptance tests for the axon CLI (drives the compiled binary)."
+authors = [{ name = "Arshpreet Singh Bhatia" }]
+requires-python = ">=3.9"
+dependencies = []
+
+[project.optional-dependencies]
+test = ["pytest>=7", "PyYAML>=6", "tomli>=1.1; python_version < '3.11'"]
+
+[tool.setuptools]
+# The tests are not an importable package; nothing to install besides the extras.
+py-modules = []
+packages = []
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "docker: needs a running Docker daemon and starts real containers (deselected by default; run with -m docker)",
+    "k8s: needs kubectl and a reachable Kubernetes context (deselected by default; run with -m k8s)",
+]
+addopts = "-m 'not docker and not k8s'"

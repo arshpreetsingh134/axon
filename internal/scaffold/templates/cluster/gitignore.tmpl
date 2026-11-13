@@ -1,0 +1,12 @@
+# axon local state, secrets and generated deployment files
+.DS_Store
+{{.Infra}}/.env
+{{.Infra}}/{{.State}}/
+{{.Infra}}/secrets/*
+!{{.Infra}}/secrets/.gitkeep
+{{.Infra}}/fabric/
+{{.Infra}}/k8s/
+**/node_modules/
+**/ui/dist/
+*.log
+!.env.example

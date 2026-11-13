@@ -1,0 +1,10 @@
+# {{.File}} — a MODULE: token = Postgres schema = /m/{{.Token}}/* route prefix = <{{.Element}}> element.
+build_type = "module"
+
+[module]
+token    = "{{.Token}}"
+language = "{{.Lang}}"
+element  = "{{.Element}}"
+ui_entry = "ui/dist/entry.js"
+label    = "{{.Label}}"
+backend  = "unix:///tmp/mycel_app_core/{{.Token}}.sock"

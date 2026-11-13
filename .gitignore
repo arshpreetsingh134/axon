@@ -1,0 +1,38 @@
+# Build output
+/bin/
+/dist/
+/completions/
+
+# Go: test binaries, coverage, local workspaces
+*.test
+*.out
+coverage.*
+*.coverprofile
+go.work
+go.work.sum
+
+# Python test harness
+/.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+*.egg-info/
+
+# Secrets and local environment files (never commit)
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Editors and OS
+.idea/
+.vscode/
+*.swp
+*~
+.DS_Store
+Thumbs.db
+
+# Logs and scratch
+*.log
+/tmp/

@@ -1,0 +1,13 @@
+# The {{.Token}} module server (Rust). axon builds it with this Dockerfile.
+FROM rust:1-alpine AS build
+WORKDIR /src
+COPY service/ ./service/
+RUN cd service && cargo build --release
+
+FROM alpine:3
+WORKDIR /app
+COPY --from=build /src/service/target/release/{{.Token}} /app/server
+ENV MYCEL_LISTEN=0.0.0.0:7373
+EXPOSE 7373
+USER 65532
+ENTRYPOINT ["/app/server"]

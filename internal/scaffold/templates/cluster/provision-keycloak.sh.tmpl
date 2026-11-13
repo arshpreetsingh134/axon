@@ -1,0 +1,59 @@
+#!/usr/bin/env bash
+# provision-keycloak.sh — create the realm, the confidential OIDC client and a seed
+# user through Keycloak's admin REST API. Idempotent: existing objects are kept.
+#
+# axon runs this after the fabric is up and passes:
+#   KC                Keycloak base URL (front door)
+#   REALM, CLIENT     from [fabric.keycloak]
+#   CLIENT_SECRET     the OIDC client secret
+#   REDIRECT_URIS     JSON array of app redirect URI patterns
+#   POST_LOGOUT_URIS  "##"-separated post-logout URI patterns
+#   KEYCLOAK_ADMIN_PASSWORD, SEED_ADMIN_EMAIL, SEED_ADMIN_PASSWORD (from .env)
+set -euo pipefail
+: "${KC:?KC is required}" "${REALM:?}" "${CLIENT:?}" "${CLIENT_SECRET:?}"
+REDIRECT_URIS="${REDIRECT_URIS:-[]}"
+POST_LOGOUT_URIS="${POST_LOGOUT_URIS:-}"
+ADMIN_PW="${KEYCLOAK_ADMIN_PASSWORD:-admin}"
+SEED_EMAIL="${SEED_ADMIN_EMAIL:-admin@{{.Name}}.local}"
+SEED_PW="${SEED_ADMIN_PASSWORD:-}"
+
+json() { python3 -c "import json,sys; print(json.dumps($1))"; }
+
+token=$(curl -fsS -X POST "$KC/realms/master/protocol/openid-connect/token" \
+  -d grant_type=password -d client_id=admin-cli -d username=admin --data-urlencode "password=$ADMIN_PW" \
+  | python3 -c 'import json,sys; print(json.load(sys.stdin)["access_token"])')
+H=(-H "Authorization: Bearer $token" -H "Content-Type: application/json")
+
+code=$(curl -s -o /dev/null -w '%{http_code}' "${H[@]}" "$KC/admin/realms/$REALM")
+if [ "$code" != "200" ]; then
+  curl -fsS "${H[@]}" -X POST "$KC/admin/realms" -d "{\"realm\":\"$REALM\",\"enabled\":true}" >/dev/null
+  echo "realm $REALM created"
+else
+  echo "realm $REALM exists"
+fi
+
+client_json=$(python3 - "$CLIENT" "$CLIENT_SECRET" "$REDIRECT_URIS" "$POST_LOGOUT_URIS" <<'PY'
+import json, sys
+cid, secret, redirects, post_logout = sys.argv[1:5]
+print(json.dumps({
+  "clientId": cid, "enabled": True, "protocol": "openid-connect", "publicClient": False,
+  "secret": secret, "standardFlowEnabled": True, "directAccessGrantsEnabled": False,
+  "redirectUris": json.loads(redirects or "[]"),
+  "attributes": {"post.logout.redirect.uris": post_logout},
+}))
+PY
+)
+existing=$(curl -fsS "${H[@]}" "$KC/admin/realms/$REALM/clients?clientId=$CLIENT" | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d[0]["id"] if d else "")')
+if [ -z "$existing" ]; then
+  curl -fsS "${H[@]}" -X POST "$KC/admin/realms/$REALM/clients" -d "$client_json" >/dev/null
+  echo "client $CLIENT created"
+else
+  curl -fsS "${H[@]}" -X PUT "$KC/admin/realms/$REALM/clients/$existing" -d "$client_json" >/dev/null
+  echo "client $CLIENT updated"
+fi
+
+if [ -n "$SEED_PW" ]; then
+  user_json=$(python3 -c 'import json,sys; e,p=sys.argv[1:3]; print(json.dumps({"username":e,"email":e,"enabled":True,"emailVerified":True,"credentials":[{"type":"password","value":p,"temporary":False}]}))' "$SEED_EMAIL" "$SEED_PW")
+  code=$(curl -s -o /dev/null -w '%{http_code}' "${H[@]}" -X POST "$KC/admin/realms/$REALM/users" -d "$user_json")
+  case "$code" in 201) echo "user $SEED_EMAIL created";; 409) echo "user $SEED_EMAIL exists";; *) echo "user create → $code" >&2; exit 1;; esac
+fi

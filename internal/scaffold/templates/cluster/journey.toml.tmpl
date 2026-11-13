@@ -1,0 +1,16 @@
+# journeys/{{.App}}_smoke.toml — scaffolded by axon; edit freely (never overwritten).
+# Run with: axon env test <env> --journey {{.App}}_smoke
+
+[journey]
+name = "{{.App}} smoke"
+app  = "{{.Host}}"
+
+[[step]]
+name = "core alive"
+path = "/healthz"
+
+# The core answers /api/system with 200 even when a module is down; the body says which.
+[[step]]
+name = "modules are serving"
+path = "/api/system"
+expect = { json = { modules = [ { health = "SERVING" } ] } }

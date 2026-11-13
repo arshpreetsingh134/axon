@@ -1,0 +1,13 @@
+<script>
+  let message = $state('');
+  async function hello() {
+    const r = await fetch('/m/{{.Token}}/hello');
+    message = (await r.json()).message;
+  }
+</script>
+
+<section>
+  <h2>{{.Title}}</h2>
+  <button onclick={hello}>Say hello</button>
+  {#if message}<p>{message}</p>{/if}
+</section>

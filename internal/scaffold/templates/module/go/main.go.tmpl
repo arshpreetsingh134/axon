@@ -1,0 +1,40 @@
+// Command server is the {{.Token}} module server. The module SDK
+// (github.com/mycelpf/mycel_module_sdk, Apache-2.0) implements the contract the core
+// host speaks over gRPC — Describe, Handle and Health — listens on MYCEL_LISTEN, opens
+// DATABASE_URL and applies the migrations below. This file only declares the module's
+// identity and its HTTP routes.
+package main
+
+import (
+	"encoding/json"
+	"log/slog"
+	"net/http"
+	"os"
+
+	modulesdk "github.com/mycelpf/mycel_module_sdk"
+	"github.com/mycelpf/mycel_module_sdk/server"
+
+	"{{.GoModule}}/logic"
+)
+
+func main() {
+	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stdout, nil)))
+	server.Serve(modulesdk.Descriptor{
+		Token:           "{{.Token}}",
+		ContractVersion: "0.2.0",
+		MenuGroup:       "Modules",
+		Nav:             []modulesdk.NavEntry{ {Label: "{{.Label}}", Path: "/"} },
+		Migrations:      []modulesdk.Migration{ {ID: "0001_init", SQL: logic.Migration0001} },
+		Handler:         routes(),
+	})
+}
+
+// routes are this module's HTTP API, served under /m/{{.Token}}/.
+func routes() http.Handler {
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /m/{{.Token}}/hello", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]string{"message": logic.Greeting(r.URL.Query().Get("name"))})
+	})
+	return mux
+}

@@ -1,0 +1,28 @@
+# {{.Name}} — runbook
+
+This directory is the **controller** of the `{{.Name}}` cluster. The descriptor is
+`{{.Infra}}/{{.File}}`; every member app is a sibling directory of this one.
+
+## Everyday commands
+
+| Goal | Command |
+|---|---|
+| Build everything and deploy the dev environment | `axon up --build` |
+| Preview what a deploy would do | `axon up --build --dry-run` |
+| Status, health and front-door URLs | `axon env status dev` |
+| Logs of one app | `axon env logs dev <app> --follow` |
+| Tear down (keeps data) | `axon down` |
+| Validate the descriptor and security posture | `axon cluster check` |
+| Full diagnosis of a running environment | `axon env diagnose dev` |
+| Run the journey tests | `axon env test dev` |
+
+## Secrets
+
+Secret values live only in `{{.Infra}}/.env` (gitignored) and `{{.Infra}}/secrets/`
+(gitignored). Descriptors reference them as `"${NAME}"`. `axon env check dev` lists any
+referenced value that is missing.
+
+## Ports
+
+Host ports were allocated free on the machine that ran `axon cluster new`:
+{{.Ports.Summary}}. The registry is `~/.config/axon/ports.toml`.

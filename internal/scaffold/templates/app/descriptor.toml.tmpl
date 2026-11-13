@@ -1,0 +1,16 @@
+# {{.File}} — an APP: one core host composing one or more modules. axon builds the core
+# FROM the cluster's core_image and runs every module server beside it.
+build_type = "app"
+
+[app]
+name               = "{{.Name}}"
+title              = "{{.Title}}"
+search_placeholder = "Search {{.Title}}…"
+
+[home]
+title = "Welcome to {{.Title}}"
+body  = "{{.Title}} is built with axon."
+{{range .Modules}}
+[[compose]]
+source = "modules/{{.}}/module"
+{{end}}

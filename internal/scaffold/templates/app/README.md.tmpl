@@ -1,0 +1,14 @@
+# {{.Title}}
+
+An axon app (`{{.Name}}`): one core host plus its modules under `modules/<token>/module`.
+
+| Goal | Command |
+|---|---|
+| Add a module | `axon app add module <name>` |
+| Validate the app and your toolchain | `axon app check` |
+| Run every module's tests | `axon app test` |
+| Build its images | `axon app build` |
+| Run it against the cluster | `axon app run` |
+
+Each module is a gRPC/HTTP server (`service/`), a UI bundle (`ui/`) and its own
+database schema (`database/`).

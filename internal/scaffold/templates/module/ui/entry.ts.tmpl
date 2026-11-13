@@ -1,0 +1,13 @@
+// Registers <{{.Element}}>, the custom element the shell mounts for this module.
+import { mount } from 'svelte';
+import App from './App.svelte';
+
+class ModuleElement extends HTMLElement {
+  connectedCallback() {
+    mount(App, { target: this });
+  }
+}
+
+if (!customElements.get('{{.Element}}')) {
+  customElements.define('{{.Element}}', ModuleElement);
+}

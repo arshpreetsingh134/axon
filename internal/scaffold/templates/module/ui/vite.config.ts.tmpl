@@ -1,0 +1,12 @@
+import { defineConfig } from 'vite';
+import { svelte } from '@sveltejs/vite-plugin-svelte';
+
+// Builds one ES module, dist/entry.js, that the core serves at /modules/{{.Token}}/entry.js.
+export default defineConfig({
+  plugins: [svelte()],
+  build: {
+    lib: { entry: 'src/entry.ts', formats: ['es'], fileName: () => 'entry.js' },
+    outDir: 'dist',
+    emptyOutDir: true,
+  },
+});

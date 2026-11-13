@@ -1,0 +1,5 @@
+-- seed-iam.sql — seed data for the cluster's IAM module.
+-- axon runs this against the IAM app's database once the IAM module has created its
+-- schema (after every deploy), so keep every statement idempotent
+-- (INSERT … ON CONFLICT DO NOTHING). The schema belongs to the IAM module image.
+SELECT 1;

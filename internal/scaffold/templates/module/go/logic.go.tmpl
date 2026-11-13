@@ -1,0 +1,22 @@
+// Package logic holds the {{.Token}} module's business rules, free of transport code.
+package logic
+
+import "strings"
+
+// Migration0001 creates the module's schema; the SDK applies it at boot.
+const Migration0001 = `
+CREATE SCHEMA IF NOT EXISTS {{.Token}};
+CREATE TABLE IF NOT EXISTS {{.Token}}.item (
+  id         BIGSERIAL PRIMARY KEY,
+  name       TEXT NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);`
+
+// Greeting returns a greeting for name (or the module's default audience).
+func Greeting(name string) string {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		name = "{{.Title}}"
+	}
+	return "Hello, " + name + "!"
+}

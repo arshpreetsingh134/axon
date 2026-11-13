@@ -1,0 +1,67 @@
+# GoReleaser config: a tag push builds darwin/linux × arm64/amd64 archives, publishes a
+# GitHub Release and updates the Homebrew tap. See docs/HOMEBREW.md.
+version: 2
+project_name: axon
+
+before:
+  hooks:
+    - go mod tidy
+    - go test ./...
+
+builds:
+  - id: axon
+    main: ./cmd/axon
+    binary: axon
+    env: [CGO_ENABLED=0]
+    goos: [darwin, linux]
+    goarch: [amd64, arm64]
+    flags: [-trimpath]
+    ldflags:
+      - -s -w
+      - -X axon/internal/commands.Version={{ .Version }}
+      - -X axon/internal/commands.Commit={{ .FullCommit }}
+      - -X axon/internal/commands.Date={{ .Date }}
+    hooks:
+      post:
+        - sh -c 'mkdir -p completions && go run ./cmd/axon completion bash > completions/axon.bash && go run ./cmd/axon completion zsh > completions/_axon && go run ./cmd/axon completion fish > completions/axon.fish'
+
+archives:
+  - id: axon
+    formats: [tar.gz]
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    files:
+      - README.md
+      - LICENSE
+      - NOTICE
+      - docs/*.md
+      - completions/*
+
+checksum:
+  name_template: checksums.txt
+
+changelog:
+  sort: asc
+  filters:
+    exclude: ["^docs:", "^test:", "^chore:"]
+
+# Homebrew formula in your tap repo (<owner>/homebrew-tap): `brew install <owner>/tap/axon`.
+brews:
+  - name: axon
+    repository:
+      owner: "{{ .Env.HOMEBREW_TAP_OWNER }}"
+      name: homebrew-tap
+      token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
+    directory: Formula
+    homepage: "https://github.com/{{ .Env.HOMEBREW_TAP_OWNER }}/axon"
+    description: "Build, deploy and operate app clusters on Docker Compose or Kubernetes from one descriptor"
+    license: "Apache-2.0"
+    commit_author:
+      name: Arshpreet Singh Bhatia
+      email: "{{ .Env.HOMEBREW_COMMIT_EMAIL }}"
+    install: |
+      bin.install "axon"
+      bash_completion.install "completions/axon.bash" => "axon"
+      zsh_completion.install "completions/_axon"
+      fish_completion.install "completions/axon.fish"
+    test: |
+      assert_match "axon", shell_output("#{bin}/axon --version")
