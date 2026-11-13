@@ -320,7 +320,9 @@ func (r *Registry) dispatch(argv []string) error {
 		own := map[string]bool{}
 		for _, f := range v.Flags {
 			for _, gf := range r.Globals {
-				if f.Name == gf.Name {
+				// only a visible verb flag shadows a global (hidden aliases of a global, like a
+				// deploy verb's --verbose, mean the same thing and must not swallow -v)
+				if f.Name == gf.Name && !f.Hidden {
 					own[f.Name] = true
 				}
 			}

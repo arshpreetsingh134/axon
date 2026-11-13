@@ -17,6 +17,7 @@ import (
 	"axon/internal/journey"
 	"axon/internal/layout"
 	"axon/internal/release"
+	"axon/internal/secrets"
 	"axon/internal/ui"
 )
 
@@ -542,6 +543,13 @@ func envFindings(m *descriptor.Model, name string) ([]check.Finding, error) {
 	}
 	// every ${VAR} the workloads reference must have a value
 	vals, _ := dotenv.Read(filepath.Join(m.Infra, ".env"))
+	if st := secrets.New(or(e.Context, m.C.Deploy.Context), descriptor.Slug(m.C.Name), name); st.Available() {
+		if list, err := st.List(); err == nil {
+			for _, x := range list {
+				vals[x.Name] = "(stored)"
+			}
+		}
+	}
 	derived := map[string]bool{"POSTGRES_PASSWORD": true, "IAM_SIGNING_KEY": true, "OIDC_CLIENT_SECRET": true, "KEYCLOAK_ADMIN_PASSWORD": true}
 	in := &gen.Input{M: m, Env: e, Ov: ov, Target: "docker", PG: gen.PG{Host: "postgres", Port: 5432, User: gen.PGUser(m), Password: "${POSTGRES_PASSWORD}"}}
 	var missing []string
@@ -553,7 +561,7 @@ func envFindings(m *descriptor.Model, name string) ([]check.Finding, error) {
 	}
 	sort.Strings(missing)
 	for _, v := range missing {
-		add("ENV_VALUE_MISSING", "blocking", "${"+v+"}", "referenced by the descriptor but not set in "+m.L.Infra+"/.env", "add "+v+"=… to "+m.L.Infra+"/.env")
+		add("ENV_VALUE_MISSING", "blocking", "${"+v+"}", "referenced by the descriptor but not set in axon secrets or "+m.L.Infra+"/.env", "axon secrets set "+v+"  (or add "+v+"=… to "+m.L.Infra+"/.env)")
 	}
 	return fs, nil
 }

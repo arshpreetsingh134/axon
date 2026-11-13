@@ -163,7 +163,7 @@ func Security(m *descriptor.Model, gitignored func(string) bool) []Finding {
 			lk := strings.ToLower(k)
 			if (strings.Contains(lk, "password") || strings.Contains(lk, "secret") || strings.HasSuffix(lk, "_key") || strings.Contains(lk, "token")) &&
 				v != "" && !strings.Contains(v, "${") {
-				add("SECURITY_SECRETS_IN_ENV", "risk", "app "+a.Decl.Name, fmt.Sprintf("[app.env] %s holds a literal secret in the committed descriptor", k), fmt.Sprintf("set %s = \"${%s}\" and put the value in .env", k, k))
+				add("SECURITY_SECRETS_IN_ENV", "risk", "app "+a.Decl.Name, fmt.Sprintf("[app.env] %s holds a literal secret in the committed descriptor", k), fmt.Sprintf("set %s = \"${%s}\" and store the value with `axon secrets set %s`", k, k, k))
 			}
 		}
 	}

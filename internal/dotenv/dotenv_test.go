@@ -55,3 +55,22 @@ func TestExpandAndRefs(t *testing.T) {
 		t.Fatal("not a pure ref")
 	}
 }
+
+func TestRemoveKeepsOtherLinesAndMultiline(t *testing.T) {
+	p := filepath.Join(t.TempDir(), ".env")
+	os.WriteFile(p, []byte("# head\nA=1\nKEY=\"-----BEGIN\nabc\n-----END\"\nB=2\nexport C=3\n"), 0o600)
+	if err := Remove(p, "KEY", "C"); err != nil {
+		t.Fatal(err)
+	}
+	m, _ := Read(p)
+	if _, ok := m["KEY"]; ok || m["A"] != "1" || m["B"] != "2" || len(m) != 2 {
+		t.Fatalf("after remove: %v", m)
+	}
+	b, _ := os.ReadFile(p)
+	if string(b[:6]) != "# head" {
+		t.Fatalf("comment lost: %q", b)
+	}
+	if st, _ := os.Stat(p); st.Mode().Perm() != 0o600 {
+		t.Fatalf("mode changed: %o", st.Mode().Perm())
+	}
+}

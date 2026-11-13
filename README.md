@@ -318,6 +318,39 @@ edits.
   gitignored, keys with loose permissions, predictable secrets, literal passwords in the
   descriptor and unpinned images.
 
+### Secrets without `.env` files
+Keep API keys out of your repository, out of every file, and out of view of a coding agent that browses your project:
+
+```bash
+axon secrets set OPENROUTER_API_KEY        # hidden prompt; or: pbpaste | axon secrets set OPENROUTER_API_KEY
+```
+
+```toml
+# the app that needs it (axonfile)
+[[app]]
+name = "acme.ai"
+[app.env]
+OPENROUTER_API_KEY = "${OPENROUTER_API_KEY}"
+```
+
+```go
+key := os.Getenv("OPENROUTER_API_KEY")   // injected on every deploy
+```
+
+- **Where they're stored:** a Kubernetes Secret per project and environment, in a dedicated `axon-secrets`
+  namespace. Tearing down or deleting an app namespace never loses them.
+- **Values never leave memory:** axon never accepts a value on the command line, never writes one to a file and
+  never prints one. Values reach `kubectl` only on stdin.
+- **`axon secrets list`:** names, when each was last changed and which apps use it, plus any reference that has
+  no value yet. It never shows values.
+- **`axon secrets import --remove`:** moves existing keys out of `.env`.
+- **`axon secrets exec -- go run .`:** runs your code locally with the secrets as environment variables.
+- **Precedence:** stored secrets win over `.env`. `axon env check` reports any `${NAME}` that is set in neither.
+
+> Requires a Kubernetes context (Docker Desktop or OrbStack Kubernetes is enough), even for the Docker target.
+> Anyone with `kubectl` access to that cluster can read the values. To keep an AI coding agent away from them,
+> also deny it `kubectl` access to secrets in the agent's own permission settings.
+
 ### Batteries-included platform
 - **One front door:** routing by host name, with URLs that work identically from your
   browser, from containers and from Kubernetes pods.
@@ -426,6 +459,7 @@ Run `axon <verb> --help` for every flag of a verb.
 | **Apps** | `app new` · `app add module` · `app remove module` · `app set` · `app check [--fix]` · `app build` · `app run` · `app test` |
 | **Environments** | `env new` · `env list` · `env show` · `env set` · `env unset` · `env check` · `env plan` · `env deploy` · `env undeploy` · `env status [--json\|--watch]` · `env logs` · `env restart` · `env test` · `env diagnose` · `env iam-keys` · `env rotate-iam-key` |
 | **Releases** | `release create` · `release list` · `release show` · `release check` · `release lock` · `release checkout` |
+| **Secrets** | `secrets set <NAME>` · `secrets list` · `secrets rm` · `secrets import [--remove]` · `secrets exec -- <cmd>` |
 | **Tooling** | `version` · `completion bash\|zsh\|fish` |
 
 **Global flags:**
@@ -467,7 +501,7 @@ carries a single JSON document, which makes axon easy to script.
 |---|---|---|
 | `.axon.infra/axonfile` | yes | The descriptor (source of truth) |
 | `.axon.infra/axon.toml` | yes | Deploy defaults, hooks, image substitutions |
-| `.axon.infra/.env` | **no** | Secret values (`${VAR}` references) |
+| `.axon.infra/.env` | **no** | Secret values (`${VAR}` references). Prefer `axon secrets`, which keeps them in the cluster instead of a file |
 | `.axon.infra/secrets/` | **no** | The identity signing key |
 | `environments/*.toml` | yes | Environments and their overrides |
 | `releases/*.toml` | yes | Immutable release records |

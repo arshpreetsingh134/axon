@@ -21,6 +21,7 @@ ALL_VERBS = sorted([
     "env plan", "env undeploy", "env status", "env logs", "env restart", "env test", "env iam-keys",
     "env rotate-iam-key",
     "release list", "release show", "release check", "release create", "release lock", "release checkout",
+    "secrets set", "secrets list", "secrets rm", "secrets import", "secrets exec",
 ])
 
 MOVED = {

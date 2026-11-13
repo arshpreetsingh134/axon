@@ -14,7 +14,9 @@ import (
 	"sort"
 	"strings"
 
+	"axon/internal/descriptor"
 	"axon/internal/dotenv"
+	"axon/internal/secrets"
 	"axon/internal/ui"
 )
 
@@ -71,6 +73,22 @@ func (s *Session) resolveSecrets(readCluster func(key string) string) error {
 		return fmt.Errorf("%s: %w", envPath, err)
 	}
 	s.Secrets = vals
+	// axon secrets (the store in the cluster) take precedence over .env
+	if st := s.SecretStore(); st != nil && st.Available() {
+		stored, err := st.Values()
+		if err != nil {
+			return err
+		}
+		for k, v := range stored {
+			if old, ok := s.Secrets[k]; ok && old != v {
+				ui.Note("%s is set both in axon secrets and in %s; using axon secrets", k, rel(s.M.Dir, envPath))
+			}
+			s.Secrets[k] = v
+		}
+		if len(stored) > 0 {
+			ui.Debug("loaded %d value(s) from axon secrets (%s/%s)", len(stored), secrets.Namespace, st.Name)
+		}
+	}
 	persist := func(k, v, why string) {
 		s.Secrets[k] = v
 		if s.DryRun {
@@ -142,6 +160,11 @@ func (s *Session) resolveSecrets(readCluster func(key string) string) error {
 		}
 	}
 	return nil
+}
+
+// SecretStore returns this project's secret store for the session's environment.
+func (s *Session) SecretStore() *secrets.Store {
+	return secrets.New(s.KubeContext, descriptor.Slug(s.M.C.Name), s.Env.Name)
 }
 
 // Environ renders secrets as KEY=VALUE for a child process (compose interpolation).

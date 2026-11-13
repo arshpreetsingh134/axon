@@ -168,3 +168,41 @@ func Lines(m map[string]string) string {
 	w.Flush()
 	return b.String()
 }
+
+// Remove deletes keys from a dotenv file (including multi-line quoted values),
+// preserving every other line and the file mode.
+func Remove(path string, keys ...string) error {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	drop := map[string]bool{}
+	for _, k := range keys {
+		drop[k] = true
+	}
+	lines := strings.Split(string(b), "\n")
+	var out []string
+	for i := 0; i < len(lines); i++ {
+		t := strings.TrimPrefix(strings.TrimSpace(lines[i]), "export ")
+		eq := strings.IndexByte(t, '=')
+		if eq <= 0 || strings.HasPrefix(t, "#") || !drop[strings.TrimSpace(t[:eq])] {
+			out = append(out, lines[i])
+			continue
+		}
+		// skip continuation lines of a multi-line double-quoted value
+		val := strings.TrimSpace(t[eq+1:])
+		if strings.HasPrefix(val, `"`) && !closesDouble(val[1:]) {
+			for i+1 < len(lines) {
+				i++
+				if closesDouble(lines[i]) {
+					break
+				}
+			}
+		}
+	}
+	mode := os.FileMode(0o600)
+	if st, err := os.Stat(path); err == nil {
+		mode = st.Mode().Perm()
+	}
+	return os.WriteFile(path, []byte(strings.Join(out, "\n")), mode)
+}

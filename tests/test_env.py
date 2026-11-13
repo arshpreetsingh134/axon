@@ -249,8 +249,8 @@ def test_env_check_reports_missing_env_values(axon, web_cluster):
     code, fs = findings(axon, web_cluster)
     assert code == 1
     assert {"id": "ENV_VALUE_MISSING", "concern": "conformance", "severity": "blocking", "subject": "${WEB_API_TOKEN}",
-            "cause": "referenced by the descriptor but not set in .axon.infra/.env",
-            "fix": "add WEB_API_TOKEN=… to .axon.infra/.env"} in fs
+            "cause": "referenced by the descriptor but not set in axon secrets or .axon.infra/.env",
+            "fix": "axon secrets set WEB_API_TOKEN  (or add WEB_API_TOKEN=… to .axon.infra/.env)"} in fs
     r = axon("env", "check", "dev", cwd=web_cluster.ctrl)
     assert r.code == 1 and "✗ ENV_VALUE_MISSING  ${WEB_API_TOKEN}" in r.out
     write(web_cluster.dotenv, read(web_cluster.dotenv) + "WEB_API_TOKEN=s3cret\n")
@@ -338,7 +338,7 @@ def test_env_diagnose_reports_literal_secrets(axon, web_cluster):
                 "--env", "DB_PASSWORD=hunter2", cwd=web_cluster.ctrl).code == 0
     d = json.loads(axon("env", "diagnose", "dev", "--json", "--concern", "security", cwd=web_cluster.ctrl).out)
     f = [f for f in d["findings"] if f["id"] == "SECURITY_SECRETS_IN_ENV"]
-    assert f and "DB_PASSWORD" in f[0]["cause"] and f[0]["fix"] == 'set DB_PASSWORD = "${DB_PASSWORD}" and put the value in .env'
+    assert f and "DB_PASSWORD" in f[0]["cause"] and f[0]["fix"] == 'set DB_PASSWORD = "${DB_PASSWORD}" and store the value with `axon secrets set DB_PASSWORD`'
 
 
 # ── env plan / up / down without docker ──────────────────────────────────────
