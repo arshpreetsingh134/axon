@@ -296,6 +296,11 @@ edits.
   inputs change.
 - **Parallel:** builds and rollouts run in parallel (`--jobs`).
 - **Scoped:** `--app <name>` builds and rolls out just one app.
+- **One module, in seconds:** `axon up --module <token>` (or `<app>/<token>`, or a worker app's name; repeatable)
+  rebuilds only that module and rolls only its workload into the running environment. If its UI changed, the
+  app's core is reassembled too. Fabric, databases, Keycloak, the IAM seed and the `post_fabric`/`post_deploy`
+  hooks are skipped and listed at the end, while `pre_build` hooks still run. Use it for the edit-and-test loop.
+  Run a full `axon up --build` after changing the descriptor, secrets, fabric or hooks.
 - **Full rebuild:** `--rebuild` ignores every cache.
 
 ### Safe, self-healing rollouts
@@ -609,7 +614,7 @@ Run `axon <verb> --help` for every flag of a verb.
 
 | Area | Commands |
 |---|---|
-| **Everyday** | `axon up [--build] [--env E] [--dry-run]` · `axon down [--volumes --yes]` |
+| **Everyday** | `axon up [--build] [--env E] [--dry-run]` · `axon up --module <[app/]token>` · `axon down [--volumes --yes]` |
 | **Project** | `cluster new` · `cluster add app\|ext\|fabric\|product` · `cluster remove …` · `cluster set k=v` · `cluster check` · `cluster explain` · `cluster generate [--check\|--diff]` · `cluster build <app>` · `cluster ports` |
 | **Apps** | `app new` · `app add module` · `app remove module` · `app set` · `app check [--fix]` · `app build` · `app run` · `app test` |
 | **Environments** | `env new` · `env list` · `env show` · `env set` · `env unset` · `env check` · `env plan` · `env deploy` · `env undeploy` · `env status [--json\|--watch]` · `env logs` · `env restart` · `env test` · `env diagnose` · `env iam-keys` · `env rotate-iam-key` |

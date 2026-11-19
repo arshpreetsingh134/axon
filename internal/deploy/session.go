@@ -33,6 +33,7 @@ type Options struct {
 	Jobs          int
 	Timeout       time.Duration
 	Apps          []string // limit the build/rollout to these apps
+	Modules       []string // fast path: build and roll only these modules / worker apps (see upModules)
 	NoHooks       bool
 	Yes           bool
 	Pull          bool // pre-pull missing external images
@@ -329,6 +330,9 @@ func (s *Session) Up() (err error) {
 			}
 			lock.Release(outcome)
 		}()
+	}
+	if len(s.O.Modules) > 0 {
+		return s.upModules()
 	}
 	where := s.Target
 	if s.Target == "k8s" {

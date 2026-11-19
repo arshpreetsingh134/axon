@@ -28,6 +28,7 @@ var deployFlags = []cli.Flag{
 	{Name: "target", Kind: cli.String, Value: "docker|k8s", Usage: "where to deploy (default: env file, then where the cluster runs)"},
 	{Name: "context", Kind: cli.String, Value: "<kube-context>", Usage: "kube context for the k8s target"},
 	{Name: "app", Kind: cli.Multi, Value: "<name>", Usage: "limit the build and rollout to this app (repeatable)"},
+	{Name: "module", Kind: cli.Multi, Value: "<[app/]token>", Usage: "fast path: rebuild and roll only this module (or worker app) in an environment that is already up; skips fabric, databases, Keycloak, IAM seed and post-deploy hooks (repeatable)"},
 	{Name: "jobs", Kind: cli.Int, Usage: "parallel build/rollout jobs (default: CPUs/2, 2–6)"},
 	{Name: "timeout", Kind: cli.String, Value: "<duration>", Usage: "per-step health/rollout timeout, e.g. 15m", Default: "10m"},
 	{Name: "keep-on-failure", Kind: cli.Bool, Usage: "leave failed workloads in place instead of rolling them back"},
@@ -45,6 +46,19 @@ func deployOptions(c *cli.Ctx, verb, env string) (deployOpts, error) {
 	o.NoHooks, o.Yes = c.Bool("no-hooks"), c.G.Yes
 	o.Jobs = c.Int("jobs")
 	o.Apps = c.Strings("app")
+	for _, m := range c.Strings("module") {
+		for _, part := range strings.Split(m, ",") {
+			if part = strings.TrimSpace(part); part != "" {
+				o.Modules = append(o.Modules, part)
+			}
+		}
+	}
+	if len(o.Modules) > 0 {
+		if len(o.Apps) > 0 {
+			return o, cli.Usage("%s: --module and --app cannot be combined (--module already names the app: <app>/<token>)", c.Verb.Name)
+		}
+		o.Build = true // a module deploy always builds what it rolls
+	}
 	if t := c.String("timeout"); t != "" {
 		d, err := time.ParseDuration(t)
 		if err != nil {
@@ -133,6 +147,9 @@ func upVerb() *cli.Verb {
 		Summary: "one command to run everything: in a cluster dir, deploy the dev environment (add --build to build first); in an app dir, run the app",
 		Help: "In a cluster controller directory (or below it), `axon up` deploys an environment — dev unless --env or [deploy].env say otherwise — " +
 			"running every step: lifecycle hooks, generate, build (with --build), fabric, databases, Keycloak, apps, IAM seed and a front-door check. " +
+			"With --module <[app/]token> (repeatable, or a worker app name) it takes the fast path instead: it rebuilds only those modules " +
+			"(and their app's core, when a UI changed) and rolls only their workloads into the running environment, skipping fabric, databases, " +
+			"Keycloak, the IAM seed and the post_fabric/post_deploy hooks; pre_build hooks still run. " +
 			"In an app directory it builds and runs that app against its cluster (`axon app run`).",
 		Flags: flags,
 		Run: func(c *cli.Ctx) error {
@@ -184,6 +201,9 @@ func deployLike(c *cli.Ctx, verb, env string, plan bool) error {
 		return err
 	}
 	if rel := c.Arg(1); rel != "" && verb == "env deploy" {
+		if len(o.Modules) > 0 {
+			return cli.Usage("env deploy: --module builds the working tree; it cannot be combined with a release (%s)", rel)
+		}
 		if err := applyRelease(s, rel); err != nil {
 			return err
 		}

@@ -26,9 +26,13 @@ type Options struct {
 	Jobs    int
 	Rebuild bool     // ignore caches
 	Apps    []string // limit to these app names (empty = all)
-	DryRun  bool
-	Arch    string // linux arch for Go servers (default: docker's)
-	Load    string // e.g. "kind:<cluster>" to load images into kind
+	// Only limits the build to these targets: "<app>/<token>" builds one module of a
+	// cored app (and reassembles that app's core), "<app>" builds a worker app's image.
+	// Every other module and app is left as it is. Empty = no limit.
+	Only   []string
+	DryRun bool
+	Arch   string // linux arch for Go servers (default: docker's)
+	Load   string // e.g. "kind:<cluster>" to load images into kind
 
 	// Platforms are the image platforms, e.g. ["linux/amd64", "linux/arm64"]. One
 	// platform builds a local image for it; more than one builds multi-architecture
@@ -137,6 +141,20 @@ func Run(m *descriptor.Model, o Options) (*Result, error) {
 	for _, a := range o.Apps {
 		want[a] = true
 	}
+	onlyMods := map[string]map[string]bool{} // app → module tokens
+	onlyWorkers := map[string]bool{}
+	for _, t := range o.Only {
+		app, tok, isMod := strings.Cut(t, "/")
+		want[app] = true
+		if !isMod {
+			onlyWorkers[app] = true
+			continue
+		}
+		if onlyMods[app] == nil {
+			onlyMods[app] = map[string]bool{}
+		}
+		onlyMods[app][tok] = true
+	}
 	var apps []*descriptor.AppModel
 	for _, a := range m.Apps {
 		if len(want) > 0 && !want[a.Decl.Name] {
@@ -162,6 +180,9 @@ func Run(m *descriptor.Model, o Options) (*Result, error) {
 			if mod.IsImage() || mod.SrcDir == "" {
 				continue
 			}
+			if len(o.Only) > 0 && !onlyMods[a.Decl.Name][mod.Token] {
+				continue
+			}
 			tasks = append(tasks, func() error { return b.module(a, mod) })
 		}
 	}
@@ -173,10 +194,16 @@ func Run(m *descriptor.Model, o Options) (*Result, error) {
 	for _, a := range apps {
 		a := a
 		if a.Decl.Cored() {
+			if len(o.Only) > 0 && onlyMods[a.Decl.Name] == nil {
+				continue
+			}
 			if err := b.coreContext(a); err != nil {
 				return nil, err
 			}
 		} else if a.Decl.Image == "" {
+			if len(o.Only) > 0 && !onlyWorkers[a.Decl.Name] {
+				continue
+			}
 			if err := b.workerImage(a); err != nil {
 				return nil, err
 			}
