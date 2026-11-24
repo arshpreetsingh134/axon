@@ -18,10 +18,10 @@ ALL_VERBS = sorted([
     "cluster set", "cluster check", "cluster explain", "cluster generate", "cluster build", "cluster ports",
     "app new", "app add module", "app remove module", "app set", "app check", "app build", "app run", "app test",
     "env new", "env list", "env show", "env set", "env unset", "env check", "env diagnose", "env deploy",
-    "env plan", "env undeploy", "env status", "env logs", "env restart", "env test", "env iam-keys",
+    "env plan", "env undeploy", "env status", "env logs", "env restart", "env test", "env iam-keys", "env keys",
     "env rotate-iam-key",
-    "release list", "release show", "release check", "release create", "release lock", "release checkout",
-    "release cut", "ci status", "ci watch", "ci logs", "ci init", "ci check", "ci secrets", "ci environments",
+    "release list", "release show", "release check", "release create", "release lock", "release checkout", "release diff", "release next", "release pin", "release record",
+    "release cut", "ci deploy", "ci status", "ci watch", "ci logs", "ci init", "ci check", "ci secrets", "ci environments",
     "secrets set", "secrets list", "secrets rm", "secrets import", "secrets exec",
 ])
 

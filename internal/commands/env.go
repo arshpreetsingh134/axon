@@ -95,7 +95,24 @@ func envVerbs() []*cli.Verb {
 		{Name: "env unset", Args: []cli.Arg{{Name: "env"}, {Name: "key", Variadic: true}}, Group: "env", Summary: "remove env keys",
 			Flags: []cli.Flag{flagDir, flagCheck}, Run: runEnvUnset},
 		{Name: "env check", Args: envArg, Group: "env", Summary: "validate an environment before deploying: env file, overrides, release, every ${VAR} it needs",
-			Flags: []cli.Flag{flagDir, flagJSON}, Run: runEnvCheck},
+			Help: "Validate an environment offline. For an official environment of a pipeline-released cluster (github/workflow.toml " +
+				"and a non-dev tier), every [app.env] value that is exactly \"${NAME}\" must be a key of the environment's " +
+				"pre-provisioned app env secret, the rule the deploy pipeline enforces. The keys are compared with the " +
+				"environment's key inventory, which holds names only and lives in axon's local state (see `axon env keys`); " +
+				"--live refreshes it first with your own kube context.",
+			Flags: []cli.Flag{flagDir, flagJSON, {Name: "live", Kind: cli.Bool, Usage: "official environments: refresh the key inventory from the cluster first (key names only)"},
+				{Name: "context", Kind: cli.String, Value: "<kube-context>", Usage: "with --live: your kube context for the cluster (default: the env's context)"}},
+			Run: runEnvCheck},
+		{Name: "env keys", Args: envArg, Group: "env", Summary: "show or update an official environment's key inventory (secret key names only, kept in axon's local state)",
+			Help: "The key inventory lists the key NAMES an official environment's pre-provisioned app env secret holds, never their " +
+				"values. It is kept under axon's user config directory, never in a repository, and `axon env check` compares the " +
+				"descriptor's required keys with it. --live reads the names from the cluster with your own kube context " +
+				"(kubectl get secret, printing names only); --add and --remove edit it by hand.",
+			Flags: []cli.Flag{flagDir, flagJSON, {Name: "live", Kind: cli.Bool, Usage: "read the key names from the cluster"},
+				{Name: "context", Kind: cli.String, Value: "<kube-context>", Usage: "with --live: your kube context for the cluster (default: the env's context)"},
+				{Name: "add", Kind: cli.Multi, Value: "<NAME,…>", Usage: "add key names (comma list, repeatable)"},
+				{Name: "remove", Kind: cli.Multi, Value: "<NAME,…>", Usage: "remove key names (comma list, repeatable)"}},
+			Run: runEnvKeys},
 		{Name: "env diagnose", Args: envArg, Group: "env", Summary: "diagnose a deployed environment across toolchain, conformance, function, security, business and devx",
 			Flags: []cli.Flag{flagDir, flagJSON, {Name: "concern", Kind: cli.Multi, Value: "<a,b>", Usage: "limit to concerns (comma list, repeatable)"},
 				{Name: "target", Kind: cli.String, Usage: "docker | k8s"}, {Name: "context", Kind: cli.String, Usage: "kube context"}},
@@ -566,6 +583,11 @@ func envFindings(m *descriptor.Model, name string) ([]check.Finding, error) {
 			}
 		}
 	}
+	// an official environment keeps its values in a pre-provisioned secret:
+	// check the required keys against that secret's inventory instead
+	if l := officialEnv(m, e); l != nil {
+		return officialEnvFindings(m, l, e, name, fs), nil
+	}
 	// every ${VAR} the workloads reference must have a value
 	vals, _ := dotenv.Read(filepath.Join(m.Infra, ".env"))
 	if st := secrets.New(or(e.Context, m.C.Deploy.Context), descriptor.Slug(m.C.Name), name); st.Available() {
@@ -602,6 +624,25 @@ func runEnvCheck(c *cli.Ctx) error {
 	m, err := controller(c)
 	if err != nil {
 		return err
+	}
+	if c.Bool("live") {
+		e, err := envcfg.Load(m.Dir, m.C.Name, c.Arg(0))
+		if err != nil {
+			return err
+		}
+		if officialEnv(m, e) == nil {
+			return cli.Usage("env check --live: %s is not an official environment of a pipeline-released cluster", c.Arg(0))
+		}
+		if err := inventoryOutsideRepos(m, c.Arg(0)); err != nil {
+			return err
+		}
+		inv, err := refreshInventory(m, e, c.Arg(0), c.String("context"))
+		if err != nil {
+			return err
+		}
+		if !c.Bool("json") {
+			ui.Sub("key inventory refreshed: %d key name(s) in secret %s", len(inv.Keys), appEnvSecret(m))
+		}
 	}
 	fs, err := envFindings(m, c.Arg(0))
 	if err != nil {

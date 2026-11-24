@@ -16,6 +16,19 @@ import (
 func ciVerbs() []*cli.Verb {
 	repoFlags := []cli.Flag{flagDir, {Name: "remote", Kind: cli.String, Default: "origin", Usage: "git remote that points at GitHub"}}
 	return []*cli.Verb{
+		{Name: "ci deploy", Args: []cli.Arg{{Name: "env"}, {Name: "release"}}, Group: "ci",
+			Summary: "start the cluster's deploy pipeline for a recorded release (--check for a dry run), with guards and a local preflight",
+			Help: "For a pipeline-released cluster (github/workflow.toml). Refuses while another run of the deploy workflow is queued or " +
+				"running (its inputs cannot be read, so a new run could silently queue behind a real deploy); --queue overrides. Then " +
+				"checks, against origin/main (what the deploy reads), that the release record is merged and that the environment's " +
+				"secret holds every required key (see `axon env check`); --no-local skips that. A real deploy asks for confirmation " +
+				"(--yes skips it). Finally starts the run and follows it to the end (--no-watch returns at once).",
+			Flags: []cli.Flag{flagDir, {Name: "check", Kind: cli.Bool, Usage: "rehearse: every apply and delete is a server-side dry run"},
+				{Name: "queue", Kind: cli.Bool, Usage: "start even if another deploy run is queued or running"},
+				{Name: "no-local", Kind: cli.Bool, Usage: "skip the local preflight"},
+				{Name: "no-watch", Kind: cli.Bool, Usage: "return once the run has started"},
+				{Name: "dry-run", Kind: cli.Bool, Usage: "run the guards and the preflight, then stop before starting anything"}},
+			Run: runCIDeploy},
 		{Name: "ci status", Group: "ci", Summary: "CI status of the current commit: every workflow run and job, with durations and links",
 			Flags: append(repoFlags, flagJSON, cli.Flag{Name: "ref", Kind: cli.String, Usage: "a commit or branch instead of HEAD"}),
 			Run:   runCIStatus},

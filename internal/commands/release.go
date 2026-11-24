@@ -17,6 +17,7 @@ import (
 	"axon/internal/deploy"
 	"axon/internal/descriptor"
 	"axon/internal/gen"
+	"axon/internal/official"
 	"axon/internal/release"
 	"axon/internal/sh"
 	"axon/internal/ui"
@@ -26,8 +27,11 @@ func releaseVerbs() []*cli.Verb {
 	return []*cli.Verb{
 		{Name: "release list", Group: "release", Summary: "list release records", Flags: []cli.Flag{flagDir, flagJSON}, Run: runReleaseList},
 		{Name: "release show", Args: []cli.Arg{{Name: "version"}}, Group: "release", Summary: "show a release record", Flags: []cli.Flag{flagDir, flagJSON}, Run: runReleaseShow},
-		{Name: "release check", Args: []cli.Arg{{Name: "version", Optional: true}}, Group: "release", Summary: "verify release digests (all releases when no version is given)",
-			Flags: []cli.Flag{flagDir, flagJSON}, Run: runReleaseCheck},
+		{Name: "release check", Args: []cli.Arg{{Name: "version", Optional: true}}, Group: "release", Summary: "verify release digests (all releases when no version is given); --pins checks image pins agree",
+			Help: "Recompute each release record's digest. With --pins on a pipeline-released cluster (github/workflow.toml), " +
+				"check instead that every image-backed member is pinned by digest, that one image is pinned to one digest in " +
+				"every member file, Dockerfile and workflow, and that each build workflow builds a locked source at its locked commit.",
+			Flags: []cli.Flag{flagDir, flagJSON, {Name: "pins", Kind: cli.Bool, Usage: "check image pins and build revisions agree (pipeline-released clusters)"}}, Run: runReleaseCheck},
 		{Name: "release create", Group: "release", Summary: "record an immutable release from the last build (or --build): image refs, source commits, digest; --push publishes to a registry",
 			Help: "Write releases/<version>.toml: every image, the source commit of every app, the platform images, sealed by a " +
 				"SHA-256 digest. Without --push the record names local images (deployable on this machine). With --push every image " +
@@ -44,8 +48,36 @@ func releaseVerbs() []*cli.Verb {
 				{Name: "no-hooks", Kind: cli.Bool, Usage: "with --build: skip lifecycle hooks"},
 				flagDryRun},
 			Run: runReleaseCreate},
-		{Name: "release lock", Group: "release", Summary: "pin every member app's source commit in release/sources.lock.toml",
-			Flags: []cli.Flag{flagDir, flagCheck}, Run: runReleaseLock},
+		{Name: "release diff", Args: []cli.Arg{{Name: "from"}, {Name: "to"}}, Group: "release",
+			Summary: "what changed between two release records: images, sources, platform images, each traced to the commit that moved it",
+			Help: "Compare two release records table by table. When both records name cluster-repository commits that this checkout " +
+				"has, each change is traced to the commit (and pull request) that moved its pin; an image that changed with no pin " +
+				"change is marked as rebuilt by the release. --markdown prints a list ready for a pull request body.",
+			Flags: []cli.Flag{flagDir, flagJSON, {Name: "markdown", Kind: cli.Bool, Usage: "print a Markdown list"}}, Run: runReleaseDiff},
+		{Name: "release next", Group: "release", Summary: "print the next release version of the series (counting records on origin/main too)",
+			Flags: []cli.Flag{flagDir, {Name: "series", Kind: cli.String, Usage: "series, e.g. 0.1 (default: the latest record's)"}}, Run: runReleaseNext},
+		{Name: "release pin", Group: "release", Summary: "write the image digests pushed by build runs into every pin (member files, Dockerfiles, workflows)",
+			Help: "For a pipeline-released cluster. Reads each build run's job logs, takes the digest pushed for every image (the image " +
+				"index digest for multi-platform builds), and rewrites every place that pins that image, then checks the pins agree. " +
+				"Nothing is committed: review with git diff and open a pull request.",
+			Flags: []cli.Flag{flagDir, {Name: "from-run", Kind: cli.Multi, Value: "<run-id,…>", Usage: "build run ids (comma list, repeatable)"},
+				{Name: "only", Kind: cli.Multi, Value: "<name,…>", Usage: "only images whose name is, or ends with -, one of these"}, flagDryRun},
+			Run: runReleasePin},
+		{Name: "release record", Group: "release", Summary: "add the release record a release run produced (and with --select, make an environment use it)",
+			Help: "For a pipeline-released cluster. Downloads the record artifact of a successful release run, checks it parses and is " +
+				"complete, writes releases/<version>.toml (refusing to change an existing one), and with --select <env> sets that " +
+				"environment's release. Nothing is committed: open a pull request; the deploy reads the record from main.",
+			Flags: []cli.Flag{flagDir, {Name: "from-run", Kind: cli.String, Value: "<run-id>", Usage: "the release run id"},
+				{Name: "select", Kind: cli.String, Value: "<env>", Usage: "also set this environment's release"}},
+			Run: runReleaseRecord},
+		{Name: "release lock", Group: "release", Summary: "pin every member app's source commit in release/sources.lock.toml; --check verifies it",
+			Help: "Write release/sources.lock.toml from the member apps' checkouts; --check reports drift instead. On a " +
+				"pipeline-released cluster (github/workflow.toml), --check verifies that every locked commit is on its repository's " +
+				"main branch (the rule the release pipeline enforces; --branch overrides), using Git ancestry on mirrors cached under the user cache " +
+				"(no compare API, so large differences cannot break it). Commits that build workflows pin outside the lock are " +
+				"checked too and reported as warnings (--lock-only skips them).",
+			Flags: []cli.Flag{flagDir, flagCheck, flagJSON, {Name: "lock-only", Kind: cli.Bool, Usage: "with --check on a pipeline-released cluster: skip build-workflow revisions"},
+				{Name: "branch", Kind: cli.String, Value: "<name>", Usage: "with --check on a pipeline-released cluster: the branch locked commits must be on (default main)"}}, Run: runReleaseLock},
 		{Name: "release checkout", Args: []cli.Arg{{Name: "version", Optional: true}}, Group: "release",
 			Summary: "check out every member app at a release's source commits (or the lock file's); refuses dirty trees",
 			Flags:   []cli.Flag{flagDir, flagDryRun}, Run: runReleaseCheckout},
@@ -113,6 +145,16 @@ func runReleaseCheck(c *cli.Ctx) error {
 	m, err := controller(c)
 	if err != nil {
 		return err
+	}
+	if c.Bool("pins") {
+		l, err := officialLayout(m.Dir)
+		if err != nil {
+			return err
+		}
+		if l == nil {
+			return cli.Usage("release check --pins: no %s here; it applies to pipeline-released clusters", official.WorkflowFile)
+		}
+		return runOfficialPinCheck(c, l)
 	}
 	var rs []*release.Record
 	if v := c.Arg(0); v != "" {
@@ -448,6 +490,14 @@ func runReleaseLock(c *cli.Ctx) error {
 	m, err := controller(c)
 	if err != nil {
 		return err
+	}
+	if l, err := officialLayout(m.Dir); err != nil {
+		return err
+	} else if l != nil {
+		if !c.Bool("check") {
+			return cli.Usage("release lock: this cluster's source lock (%s) is written by its release pipeline tool; use --check to verify it", official.DefaultLock)
+		}
+		return runOfficialLockCheck(c, l)
 	}
 	cur := currentSources(m)
 	var old sourcesLock
