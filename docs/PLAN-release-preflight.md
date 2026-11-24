@@ -254,3 +254,47 @@ Next:
   (D1).
 - **Phase 5:** the renderer.
 - **Pass 2 (C.9):** needs the REA server configured with Ghidra in the configuration this session reads.
+
+### Phase 4 and 5 progress (2026-11-24, later)
+
+- **The developer's identity on the QA cluster (D1):** the developer can read workloads, ConfigMaps, Ingresses and
+  NetworkPolicies, but **cannot read secrets and cannot write**. So `env keys --live` and a server-side dry run aren't
+  possible with this role. The renderer's plan compares with the live objects' *last-applied* manifests instead,
+  which needs read access only. To read key names, the role needs `get` on the app env secret.
+- **`axon env plan <env> [<release>] --context <ctx>`** for official environments renders the deploy objects and compares
+  them with the live last-applied manifests. On QA, release 0.1.19 gives **1,017 of 1,017 rendered objects
+  unchanged**. That's about 79% of what a deploy applies. Covered:
+  - every switcher app's ServiceAccount, Service, Ingress, delegation ConfigMap and Deployment;
+  - all their NetworkPolicies, from one edge list mirrored into ingress rules;
+  - the namespace-wide policies.
+- **Not rendered yet:**
+  - the IAM and console Deployments, which need runtime inputs: the IAM configuration and first admin, and the
+    console topology;
+  - the two workers;
+  - the fabric (traefik, temporal, keycloak, grafana, tempo, helix, clickhouse), with its jobs, ConfigMaps and
+    policies.
+- **Later the same day:** the workers and the fabric are rendered too. Against QA's release 0.1.19, `env plan`
+  gives **1,283 of 1,283 rendered objects unchanged**, out of the 1,289 a deploy applies. The fabric objects (front
+  door, workflow engine, identity provider, tracing, analytics store, knowledge base) come from embedded templates
+  with placeholders for every value that varies by cluster, environment or release, and are emitted only when the
+  descriptor declares them. Six objects are left:
+  - the IAM and console Deployments (runtime inputs);
+  - the generated IAM configuration, the IAM database schema (shipped inside the IAM image) and the database list;
+  - a fingerprint of secret values, which a reader role cannot compute.
+- **IAM configuration and database list:**
+  - The database job's ConfigMap renders byte-for-byte from the descriptor (databases in order, plus the audit
+    extension in each).
+  - The IAM configuration renders its structure from the descriptor and the declared demo people. Each
+    application's public key, the platform catalogs' versions and each person's subject are runtime values read
+    from the live ConfigMap; new entries without one are reported, never invented.
+  - The IAM Deployment renders with its two runtime inputs (the first administrator's subject and the
+    configuration hash) read live.
+  - On QA: **1,286 of 1,286 rendered objects unchanged**. Left: the console Deployment, the IAM schema ConfigMap
+    (inside the IAM image) and the secrets fingerprint.
+- **Console Deployment:** it renders from the descriptor:
+  - targets: every app with a host, then the products;
+  - topology: the fabric in declaration order, and every app with its kind, host and module tokens;
+  - realm, dashboards URL and KPI backend;
+  - its own service account, licence label and recreate strategy.
+  On QA: **1,287 of 1,287 rendered objects unchanged**. Left: the IAM schema ConfigMap (inside the IAM image) and the
+  secrets fingerprint (needs secret values).

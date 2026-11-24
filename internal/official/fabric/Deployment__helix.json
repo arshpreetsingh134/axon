@@ -1,0 +1,218 @@
+{
+ "apiVersion": "apps/v1",
+ "kind": "Deployment",
+ "metadata": {
+  "annotations": {},
+  "name": "helix",
+  "namespace": "{{NAMESPACE}}"
+ },
+ "spec": {
+  "replicas": 1,
+  "selector": {
+   "matchLabels": {
+    "app.kubernetes.io/name": "helix"
+   }
+  },
+  "strategy": {
+   "type": "Recreate"
+  },
+  "template": {
+   "metadata": {
+    "labels": {
+     "app": "helix",
+     "app.kubernetes.io/name": "helix"
+    }
+   },
+   "spec": {
+    "automountServiceAccountToken": true,
+    "containers": [
+     {
+      "command": [
+       "/usr/local/bin/mycel_storage_engine",
+       "serve"
+      ],
+      "env": [
+       {
+        "name": "MYCEL_HTTP_ADDR",
+        "value": "0.0.0.0:7373"
+       },
+       {
+        "name": "STORAGE_ALLOW_NETWORK",
+        "value": "1"
+       },
+       {
+        "name": "STORAGE_ROOT",
+        "value": "/data/storage-objects"
+       },
+       {
+        "name": "STORAGE_BUNDLE_ROOT",
+        "value": "/data/.helix.storage/storage_engine"
+       },
+       {
+        "name": "POSTGRES_PASSWORD_URI",
+        "valueFrom": {
+         "secretKeyRef": {
+          "key": "uri-password",
+          "name": "postgres-credentials"
+         }
+        }
+       },
+       {
+        "name": "STORAGE_PG_URL",
+        "value": "postgres://myceladmin:$(POSTGRES_PASSWORD_URI)@{{PG_HOST}}:5432/helix?sslmode=require"
+       },
+       {
+        "name": "STORAGE_PG_SSLROOTCERT",
+        "value": "/etc/ssl/certs/ca-certificates.crt"
+       }
+      ],
+      "image": "{{IMAGE:products.helix}}",
+      "imagePullPolicy": "IfNotPresent",
+      "name": "helix",
+      "ports": [
+       {
+        "containerPort": 7373,
+        "name": "http"
+       }
+      ],
+      "readinessProbe": {
+       "exec": {
+        "command": [
+         "/usr/local/bin/mycel_storage_engine",
+         "entities",
+         "readiness"
+        ]
+       },
+       "periodSeconds": 5,
+       "timeoutSeconds": 8
+      },
+      "startupProbe": {
+       "exec": {
+        "command": [
+         "/usr/local/bin/mycel_storage_engine",
+         "entities",
+         "readiness"
+        ]
+       },
+       "failureThreshold": 36,
+       "periodSeconds": 5,
+       "timeoutSeconds": 8
+      },
+      "volumeMounts": [
+       {
+        "mountPath": "/data",
+        "name": "files"
+       }
+      ]
+     }
+    ],
+    "imagePullSecrets": [
+     {
+      "name": "mycel-ghcr-pull"
+     }
+    ],
+    "initContainers": [
+     {
+      "command": [
+       "sh",
+       "-c",
+       "set -eu; src=/kb-source/kb/.helix.storage/storage_engine; dst=/data/.helix.storage/storage_engine; mkdir -p \"$dst/bundles\"; for bundle in \"$src\"/bundles/*; do [ -d \"$bundle\" ] || continue; name=${bundle##*/}; if [ -e \"$dst/bundles/$name\" ]; then [ \"$(sha256sum \"$bundle/MANIFEST.json\" | cut -d ' ' -f1)\" = \"$(sha256sum \"$dst/bundles/$name/MANIFEST.json\" | cut -d ' ' -f1)\" ] || { echo 'bundle version conflicts with persistent storage' >&2; exit 1; }; else rm -rf \"$dst/bundles/.$name.pending\"; cp -R \"$bundle\" \"$dst/bundles/.$name.pending\"; mv \"$dst/bundles/.$name.pending\" \"$dst/bundles/$name\"; fi; done; rm -rf /data/.helix.storage/.incoming/storage_engine; mkdir -p /data/.helix.storage/.incoming/storage_engine; cp -R \"$src\"/. /data/.helix.storage/.incoming/storage_engine/"
+      ],
+      "image": "{{IMAGE:products.helix}}",
+      "imagePullPolicy": "IfNotPresent",
+      "name": "load-storage-bundle",
+      "volumeMounts": [
+       {
+        "mountPath": "/data",
+        "name": "files"
+       },
+       {
+        "mountPath": "/kb-source",
+        "name": "kb-source",
+        "readOnly": true
+       }
+      ]
+     },
+     {
+      "command": [
+       "sh",
+       "-c",
+       "set -eu; printf '%s\\n' yes | /usr/local/bin/mycel_storage_engine entities model install; cp /data/.helix.storage/.incoming/storage_engine/current.json /data/.helix.storage/storage_engine/current.json.pending; mv /data/.helix.storage/storage_engine/current.json.pending /data/.helix.storage/storage_engine/current.json"
+      ],
+      "env": [
+       {
+        "name": "MYCEL_HTTP_ADDR",
+        "value": "0.0.0.0:7373"
+       },
+       {
+        "name": "STORAGE_ALLOW_NETWORK",
+        "value": "1"
+       },
+       {
+        "name": "STORAGE_ROOT",
+        "value": "/data/storage-objects"
+       },
+       {
+        "name": "STORAGE_BUNDLE_ROOT",
+        "value": "/data/.helix.storage/.incoming/storage_engine"
+       },
+       {
+        "name": "POSTGRES_PASSWORD_URI",
+        "valueFrom": {
+         "secretKeyRef": {
+          "key": "uri-password",
+          "name": "postgres-credentials"
+         }
+        }
+       },
+       {
+        "name": "STORAGE_PG_URL",
+        "value": "postgres://myceladmin:$(POSTGRES_PASSWORD_URI)@{{PG_HOST}}:5432/helix?sslmode=require"
+       },
+       {
+        "name": "STORAGE_PG_SSLROOTCERT",
+        "value": "/etc/ssl/certs/ca-certificates.crt"
+       }
+      ],
+      "image": "{{IMAGE:products.helix}}",
+      "imagePullPolicy": "IfNotPresent",
+      "name": "install-storage-model",
+      "volumeMounts": [
+       {
+        "mountPath": "/data",
+        "name": "files"
+       },
+       {
+        "mountPath": "/kb-source",
+        "name": "kb-source",
+        "readOnly": true
+       }
+      ]
+     }
+    ],
+    "securityContext": {
+     "fsGroup": 10001,
+     "runAsGroup": 10001,
+     "runAsNonRoot": true,
+     "runAsUser": 10001
+    },
+    "serviceAccountName": "mycel-namespace-reader",
+    "volumes": [
+     {
+      "name": "files",
+      "persistentVolumeClaim": {
+       "claimName": "helix-files"
+      }
+     },
+     {
+      "image": {
+       "pullPolicy": "IfNotPresent",
+       "reference": "{{IMAGE:knowledge_base.image}}"
+      },
+      "name": "kb-source"
+     }
+    ]
+   }
+  }
+ }
+}

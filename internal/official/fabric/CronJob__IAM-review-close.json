@@ -1,0 +1,76 @@
+{
+ "apiVersion": "batch/v1",
+ "kind": "CronJob",
+ "metadata": {
+  "annotations": {},
+  "labels": {
+   "app": "{{IAM}}-review-close"
+  },
+  "name": "{{IAM}}-review-close",
+  "namespace": "{{NAMESPACE}}"
+ },
+ "spec": {
+  "concurrencyPolicy": "Forbid",
+  "failedJobsHistoryLimit": 3,
+  "jobTemplate": {
+   "spec": {
+    "activeDeadlineSeconds": 300,
+    "backoffLimit": 2,
+    "template": {
+     "metadata": {
+      "labels": {
+       "app": "{{IAM}}-review-close"
+      }
+     },
+     "spec": {
+      "automountServiceAccountToken": false,
+      "containers": [
+       {
+        "command": [
+         "/modules/mycel_iam/server",
+         "close-reviews",
+         "http://{{IAM}}:9080"
+        ],
+        "image": "{{IAM_IMAGE}}",
+        "imagePullPolicy": "IfNotPresent",
+        "name": "review-close",
+        "resources": {
+         "limits": {
+          "memory": "512Mi"
+         },
+         "requests": {
+          "cpu": "10m",
+          "memory": "32Mi"
+         }
+        },
+        "securityContext": {
+         "allowPrivilegeEscalation": false,
+         "capabilities": {
+          "drop": [
+           "ALL"
+          ]
+         },
+         "readOnlyRootFilesystem": true,
+         "runAsNonRoot": true,
+         "runAsUser": 65532,
+         "seccompProfile": {
+          "type": "RuntimeDefault"
+         }
+        }
+       }
+      ],
+      "imagePullSecrets": [
+       {
+        "name": "mycel-ghcr-pull"
+       }
+      ],
+      "restartPolicy": "Never",
+      "serviceAccountName": "mycel-{{IAM}}"
+     }
+    }
+   }
+  },
+  "schedule": "17 * * * *",
+  "successfulJobsHistoryLimit": 1
+ }
+}

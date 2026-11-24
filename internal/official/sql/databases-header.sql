@@ -1,0 +1,3 @@
+-- Generated and owned by mycel — do not edit by hand.
+-- Shared Postgres: one logical DB per app + Keycloak's store.
+-- Each core/module applies migrations into schema=<token> WITHIN its DB.

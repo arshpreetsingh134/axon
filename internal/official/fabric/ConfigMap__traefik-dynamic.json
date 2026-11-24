@@ -1,0 +1,12 @@
+{
+ "apiVersion": "v1",
+ "data": {
+  "dynamic.yml": "tls:\n  certificates:\n    - certFile: /etc/traefik/tls/tls.crt\n      keyFile: /etc/traefik/tls/tls.key\nhttp:\n  middlewares:\n    deny-all:\n      ipAllowList:\n        sourceRange:\n          - \"127.0.0.1/32\"\n  routers:\n    deny-local-identity:\n      rule: \"PathRegexp(`^/m/mycel_iam/(users|roles|login)$`)\"\n      entryPoints: [web, websecure]\n      priority: 10000\n      middlewares: [deny-all]\n      service: noop@internal\n    deny-grafana-metrics:\n      rule: \"Host(`grafana.{{DOMAIN}}`) && PathPrefix(`/metrics`)\"\n      entryPoints: [web, websecure]\n      priority: 10000\n      middlewares: [deny-all]\n      service: noop@internal\n"
+ },
+ "kind": "ConfigMap",
+ "metadata": {
+  "annotations": {},
+  "name": "traefik-dynamic",
+  "namespace": "{{NAMESPACE}}"
+ }
+}

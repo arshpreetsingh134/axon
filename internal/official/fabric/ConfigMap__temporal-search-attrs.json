@@ -1,0 +1,12 @@
+{
+ "apiVersion": "v1",
+ "data": {
+  "register.sh": "set -e\necho \"waiting for temporal...\"\ni=0; until temporal --address temporal:7233 operator cluster health >/dev/null 2>&1; do i=$((i+1)); [ $i -gt 60 ] && { echo \"temporal not ready\"; exit 1; }; sleep 3; done\nattributes=$(temporal --address temporal:7233 operator search-attribute list --namespace default -o json)\nfor n in MycelState MycelPhase; do\n  if printf '%s\\n' \"$attributes\" | grep -Eq \"\\\"$n\\\"[[:space:]]*:[[:space:]]*\\\"INDEXED_VALUE_TYPE_KEYWORD\\\"\"; then continue; fi\n  temporal --address temporal:7233 operator search-attribute create --namespace default --name \"$n\" --type Keyword\ndone\necho \"search attributes registered\"\n"
+ },
+ "kind": "ConfigMap",
+ "metadata": {
+  "annotations": {},
+  "name": "temporal-search-attrs",
+  "namespace": "{{NAMESPACE}}"
+ }
+}
