@@ -254,3 +254,22 @@ Next:
   (D1).
 - **Phase 5:** the renderer.
 - **Pass 2 (C.9):** needs the REA server configured with Ghidra in the configuration this session reads.
+
+### Phase 4 and 5 progress (2026-11-24, later)
+
+- **The developer's identity on the QA cluster (D1):** the developer can read workloads, ConfigMaps, Ingresses and
+  NetworkPolicies, but **cannot read secrets and cannot write**. So `env keys --live` and a server-side dry run aren't
+  possible with this role. The renderer's plan compares with the live objects' *last-applied* manifests instead,
+  which needs read access only. To read key names, the role needs `get` on the app env secret.
+- **`axon env plan <env> [<release>] --context <ctx>`** for official environments renders the deploy objects and compares
+  them with the live last-applied manifests. On QA, release 0.1.19 gives **1,017 of 1,017 rendered objects
+  unchanged**. That's about 79% of what a deploy applies. Covered:
+  - every switcher app's ServiceAccount, Service, Ingress, delegation ConfigMap and Deployment;
+  - all their NetworkPolicies, from one edge list mirrored into ingress rules;
+  - the namespace-wide policies.
+- **Not rendered yet:**
+  - the IAM and console Deployments, which need runtime inputs: the IAM configuration and first admin, and the
+    console topology;
+  - the two workers;
+  - the fabric (traefik, temporal, keycloak, grafana, tempo, helix, clickhouse), with its jobs, ConfigMaps and
+    policies.

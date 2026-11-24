@@ -125,8 +125,15 @@ func envVerbs() []*cli.Verb {
 				"workload uses (the generated deploy pipeline sets them). ${VAR} values come from the axon secret store, " +
 				"then .env, then the process environment.",
 			Flags: deployFlags, Run: runEnvDeploy},
-		{Name: "env plan", Args: envArg, Group: "env", Summary: "show what `env deploy` would do (same as --dry-run)",
-			Flags: deployFlags, Run: func(c *cli.Ctx) error { return deployLike(c, "env plan", c.Arg(0), true) }},
+		{Name: "env plan", Args: []cli.Arg{{Name: "env"}, {Name: "release", Optional: true}}, Group: "env", Summary: "show what `env deploy` would do (same as --dry-run)",
+			Help: "Show what `env deploy` would do, changing nothing. For an official environment of a pipeline-released cluster, render " +
+				"the deploy objects for <release> (default: the environment's release), read the live objects' last-applied " +
+				"configuration with your own kube context (read access is enough), and list what a deploy would create or change. " +
+				"--offline only renders; --out writes the rendered objects as JSON.",
+			Flags: append(append([]cli.Flag{}, deployFlags...), flagJSON,
+				cli.Flag{Name: "out", Kind: cli.String, Value: "<dir>", Usage: "official environments: write the rendered objects to this directory"},
+				cli.Flag{Name: "offline", Kind: cli.Bool, Usage: "official environments: render only; do not read the cluster"}),
+			Run: runEnvPlan},
 		{Name: "env undeploy", Args: envArg, Group: "env", Summary: "tear an environment down (data volumes are kept unless --volumes)",
 			Flags: []cli.Flag{flagDir, {Name: "volumes", Kind: cli.Bool, Usage: "also delete data volumes (asks for confirmation)"},
 				{Name: "target", Kind: cli.String, Usage: "docker | k8s"}, {Name: "context", Kind: cli.String, Usage: "kube context"},
@@ -924,4 +931,20 @@ func applyRelease(s *sessionT, version string) error {
 	}
 	ui.Note("deploying release %s (%d images)", version, len(r.Table("images")))
 	return nil
+}
+
+// runEnvPlan plans an official environment with the official renderer, and any
+// other environment as a dry-run deploy.
+func runEnvPlan(c *cli.Ctx) error {
+	if m, err := controller(c); err == nil {
+		if e, err := envcfg.Load(m.Dir, m.C.Name, c.Arg(0)); err == nil {
+			if l := officialEnv(m, e); l != nil {
+				return runOfficialPlan(c, m, l, e, c.Arg(0))
+			}
+		}
+	}
+	if c.Arg(1) != "" {
+		return cli.Usage("env plan: a release argument applies to official environments of pipeline-released clusters")
+	}
+	return deployLike(c, "env plan", c.Arg(0), true)
 }
