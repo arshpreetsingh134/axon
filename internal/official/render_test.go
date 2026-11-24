@@ -1,7 +1,9 @@
 package official
 
 import (
+	"crypto/sha1"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -261,7 +263,7 @@ func TestRenderIAMConfig(t *testing.T) {
 		t.Error("provider issuer")
 	}
 	want := map[string]bool{"catalog version of example.kpi": true, "public key of example.kpi (generated at deploy)": true,
-		"public key of example.orders.app (generated at deploy)": true, "subject of z@example.test (assigned at deploy)": true}
+		"public key of example.orders.app (generated at deploy)": true}
 	for _, u := range unknown {
 		delete(want, u)
 	}
@@ -291,5 +293,25 @@ func TestConsoleTargetsAndTopology(t *testing.T) {
 	}
 	if !strings.Contains(topo, `{"name":"example.worker","kind":"project","modules":[]}`) || !strings.Contains(topo, `{"name":"example.shop.app","kind":"module","host":"shop","modules":["shop"]}`) {
 		t.Errorf("topology apps %s", topo)
+	}
+}
+
+func TestDemoSubject(t *testing.T) {
+	// a known version-5 UUID: DNS namespace, name "python.org" (RFC 4122 test vector used by Python's uuid docs)
+	h := sha1.New()
+	h.Write(dnsNamespace[:])
+	h.Write([]byte("python.org"))
+	u := h.Sum(nil)[:16]
+	u[6] = u[6]&0x0f | 0x50
+	u[8] = u[8]&0x3f | 0x80
+	if got := fmt.Sprintf("%x-%x-%x-%x-%x", u[0:4], u[4:6], u[6:8], u[8:10], u[10:16]); got != "886313e1-3b8a-5372-9b90-0c9aee199e5d" {
+		t.Fatalf("uuid5 construction: %s", got)
+	}
+	a, b := DemoSubject("realm", "Person@Example.test"), DemoSubject("realm", "person@example.test")
+	if a != b || len(a) != 36 || a[14] != '5' {
+		t.Errorf("subject %s / %s", a, b)
+	}
+	if DemoSubject("other", "person@example.test") == a {
+		t.Error("the realm must change the subject")
 	}
 }

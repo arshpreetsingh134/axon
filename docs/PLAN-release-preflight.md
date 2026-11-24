@@ -298,3 +298,6 @@ Next:
   - its own service account, licence label and recreate strategy.
   On QA: **1,287 of 1,287 rendered objects unchanged**. Left: the IAM schema ConfigMap (inside the IAM image) and the
   secrets fingerprint (needs secret values).
+- **Demo person subjects are computed** (pass 2, SPEC.md C.10): a version-5 UUID in the DNS namespace of the realm,
+  a zero byte and the lower-cased email. QA still plans 1,287 of 1,287 unchanged with subjects computed rather than
+  read.
