@@ -147,7 +147,7 @@ func runOfficialPlan(c *cli.Ctx, m *descriptor.Model, l *official.Layout, e *env
 		}
 	}
 	ui.OK("release %s on %s: %d unchanged, %d to change, %d to create (of %d rendered objects)", version, env, n["unchanged"], n["change"], n["create"], len(objs))
-	ui.Note("not rendered yet: the console Deployment, the IAM schema ConfigMap (shipped inside the IAM image) and the secrets fingerprint (needs secret values)")
+	ui.Note("not rendered yet: the IAM schema ConfigMap (shipped inside the IAM image) and the secrets fingerprint (needs secret values)")
 	for _, s := range skipped {
 		ui.Sub("not rendered yet: %s", s)
 	}

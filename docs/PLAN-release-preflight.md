@@ -291,3 +291,10 @@ Next:
     configuration hash) read live.
   - On QA: **1,286 of 1,286 rendered objects unchanged**. Left: the console Deployment, the IAM schema ConfigMap
     (inside the IAM image) and the secrets fingerprint.
+- **Console Deployment:** it renders from the descriptor:
+  - targets: every app with a host, then the products;
+  - topology: the fabric in declaration order, and every app with its kind, host and module tokens;
+  - realm, dashboards URL and KPI backend;
+  - its own service account, licence label and recreate strategy.
+  On QA: **1,287 of 1,287 rendered objects unchanged**. Left: the IAM schema ConfigMap (inside the IAM image) and the
+  secrets fingerprint (needs secret values).

@@ -65,7 +65,12 @@ type Descriptor struct {
 		App  string `toml:"app"`
 	} `toml:"product"`
 	Fabric map[string]any `toml:"fabric"`
+
+	// FabricOrder lists the [fabric.*] tables in file order.
+	FabricOrder []string `toml:"-"`
 }
+
+var fabricTable = regexp.MustCompile(`(?m)^\[fabric\.([A-Za-z0-9_-]+)\]`)
 
 // HasFabric reports whether the descriptor declares [fabric.<name>].
 func (d *Descriptor) HasFabric(name string) bool { _, ok := d.Fabric[name]; return ok }
@@ -85,6 +90,11 @@ func LoadDescriptor(path string) (*Descriptor, error) {
 		return nil, fmt.Errorf("%s: %w", path, err)
 	}
 	sort.SliceStable(d.Switcher.App, func(i, j int) bool { return d.Switcher.App[i].Order < d.Switcher.App[j].Order })
+	if b, err := os.ReadFile(path); err == nil {
+		for _, m := range fabricTable.FindAllStringSubmatch(string(b), -1) {
+			d.FabricOrder = append(d.FabricOrder, m[1])
+		}
+	}
 	return &d, nil
 }
 
@@ -291,12 +301,7 @@ func RenderAppCore(in *RenderInput) (objs, shadow []Object, skipped []string) {
 		if title == "" {
 			title = titleWords(name)
 		}
-		token := ""
-		if ts := in.Tokens[name]; len(ts) > 0 {
-			token = ts[0]
-		} else {
-			token = platformTokens[host]
-		}
+		token := rawToken(in, name)
 		iam := "https://iam." + in.Domain
 		head := []any{
 			envVal("PORT", "9080"),
@@ -353,6 +358,30 @@ func RenderAppCore(in *RenderInput) (objs, shadow []Object, skipped []string) {
 			keys = append(keys, k)
 		}
 		sort.Strings(keys)
+		if console { // the cluster console: what it watches and how to reach it
+			realm := ""
+			if kc, ok := in.Desc.Fabric["keycloak"].(map[string]any); ok {
+				realm, _ = kc["realm"].(string)
+			}
+			for k, v := range map[string]string{
+				"MYCEL_CONSOLE_REALM":    realm,
+				"MYCEL_CONSOLE_TARGETS":  in.consoleTargets(),
+				"MYCEL_CONSOLE_TOPOLOGY": in.consoleTopology(),
+				"MYCEL_KPI_URL":          "kpi:7373",
+			} {
+				rest[k] = envVal(k, v)
+				if !contains(keys, k) {
+					keys = append(keys, k)
+				}
+			}
+			if in.Desc.HasFabric("tracing") {
+				rest["MYCEL_CONSOLE_GRAFANA_URL"] = envVal("MYCEL_CONSOLE_GRAFANA_URL", "https://grafana."+in.Domain)
+				if !contains(keys, "MYCEL_CONSOLE_GRAFANA_URL") {
+					keys = append(keys, "MYCEL_CONSOLE_GRAFANA_URL")
+				}
+			}
+			sort.Strings(keys)
+		}
 		isIAM := kind == "iam"
 		if isIAM { // the IAM module runs in cluster mode from its mounted configuration
 			for k, v := range map[string]string{
@@ -436,8 +465,15 @@ func RenderAppCore(in *RenderInput) (objs, shadow []Object, skipped []string) {
 			ann["mycel.dev/iam-configuration"] = in.IAMConfigHash
 			dep["spec"].(map[string]any)["strategy"] = map[string]any{"type": "Recreate"}
 		}
-		if (isIAM && (in.IAMFirstAdminSubject == "" || in.IAMConfigHash == "")) || console {
-			skipped = append(skipped, "Deployment/"+N+" (needs runtime inputs: the IAM configuration and first admin, or the console topology)")
+		if console {
+			pod["automountServiceAccountToken"] = true
+			pod["serviceAccountName"] = "mycel-app-cluster-console"
+			labels := dep["spec"].(map[string]any)["template"].(map[string]any)["metadata"].(map[string]any)["labels"].(map[string]any)
+			labels["mycel.io/license-journal-clc"] = "true"
+			dep["spec"].(map[string]any)["strategy"] = map[string]any{"type": "Recreate"}
+		}
+		if isIAM && (in.IAMFirstAdminSubject == "" || in.IAMConfigHash == "") {
+			skipped = append(skipped, "Deployment/"+N+" (needs runtime inputs from the cluster: the first IAM administrator and the IAM configuration hash)")
 			shadow = append(shadow, dep)
 			continue
 		}
@@ -563,4 +599,60 @@ func contains(l []string, s string) bool {
 		}
 	}
 	return false
+}
+
+// consoleTargets lists every app the console watches: each [[app]] with a
+// host, in descriptor order, then the products behind the front door.
+func (in *RenderInput) consoleTargets() string {
+	var t []string
+	for _, a := range in.Desc.App {
+		if a.Host != "" {
+			t = append(t, a.Name+"=http://"+K8sName(a.Name)+":9080")
+		}
+	}
+	for _, s := range in.Desc.Switcher.App {
+		if _, ok := productKey(in, s.App); ok {
+			t = append(t, s.App+"=http://"+K8sName(s.App)+":9080")
+		}
+	}
+	return strings.Join(t, ",")
+}
+
+// consoleTopology is the cluster's shape as the console shows it: the fabric
+// services, and every app with its kind, host and module tokens.
+func (in *RenderInput) consoleTopology() string {
+	type app struct {
+		Name    string   `json:"name"`
+		Kind    string   `json:"kind"`
+		Host    string   `json:"host,omitempty"`
+		Modules []string `json:"modules"`
+	}
+	fabric := []string{}
+	for _, f := range in.Desc.FabricOrder {
+		if f != "iam" && f != "console" {
+			fabric = append(fabric, f)
+		}
+	}
+	apps := []app{}
+	for _, a := range in.Desc.App {
+		switch a.Kind {
+		case "project":
+			apps = append(apps, app{Name: a.Name, Kind: "project", Modules: []string{}})
+		case "iam":
+			apps = append(apps, app{Name: a.Name, Kind: "iam", Host: a.Host, Modules: []string{rawToken(in, a.Name)}})
+		default:
+			apps = append(apps, app{Name: a.Name, Kind: "module", Host: a.Host, Modules: []string{rawToken(in, a.Name)}})
+		}
+	}
+	for _, s := range in.Desc.Switcher.App {
+		if key, ok := productKey(in, s.App); ok {
+			host, _, _, _, _ := in.Desc.appEntry(s.App)
+			apps = append(apps, app{Name: s.App, Kind: "module", Host: host, Modules: []string{key}})
+		}
+	}
+	b, _ := json.Marshal(struct {
+		Fabric []string `json:"fabric"`
+		Apps   []app    `json:"apps"`
+	}{fabric, apps})
+	return string(b)
 }

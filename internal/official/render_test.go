@@ -269,3 +269,27 @@ func TestRenderIAMConfig(t *testing.T) {
 		t.Errorf("unreported unknowns %v (got %v)", want, unknown)
 	}
 }
+
+func TestConsoleTargetsAndTopology(t *testing.T) {
+	in := renderFixture(t)
+	in.Desc.App = append(in.Desc.App, struct {
+		Name     string            `toml:"name"`
+		Kind     string            `toml:"kind"`
+		Host     string            `toml:"host"`
+		DB       string            `toml:"db"`
+		Temporal string            `toml:"temporal"`
+		Port     int               `toml:"port"`
+		Env      map[string]string `toml:"env"`
+	}{Name: "example.worker", Kind: "project"})
+	in.Desc.FabricOrder = []string{"postgres", "iam", "traefik", "console"}
+	if got := in.consoleTargets(); got != "example.kpi=http://app-example-kpi:9080,example.shop.app=http://app-example-shop-app:9080,example.orders.app=http://app-example-orders-app:9080" {
+		t.Errorf("targets %s", got)
+	}
+	topo := in.consoleTopology()
+	if !strings.HasPrefix(topo, `{"fabric":["postgres","traefik"],"apps":[`) {
+		t.Errorf("topology %s", topo)
+	}
+	if !strings.Contains(topo, `{"name":"example.worker","kind":"project","modules":[]}`) || !strings.Contains(topo, `{"name":"example.shop.app","kind":"module","host":"shop","modules":["shop"]}`) {
+		t.Errorf("topology apps %s", topo)
+	}
+}
