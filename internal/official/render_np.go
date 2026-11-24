@@ -83,6 +83,16 @@ func RenderNetworkPolicies(in *RenderInput, objs []Object, frontendIP string) []
 	for _, a := range in.Desc.Switcher.App {
 		memberOf[K8sName(a.App)] = a.App
 	}
+	worker := map[string]bool{}
+	wfmN := ""
+	for _, a := range in.Desc.App {
+		if a.Kind == "project" {
+			worker[K8sName(a.Name)] = true
+		}
+		if a.Host == "wfm" {
+			wfmN = K8sName(a.Name)
+		}
+	}
 	type edgeSet map[string]peer
 	edges := map[string]edgeSet{} // source label → peers
 	add := func(src string, p peer) {
@@ -91,6 +101,29 @@ func RenderNetworkPolicies(in *RenderInput, objs []Object, frontendIP string) []
 		}
 		edges[src][p.name] = p
 	}
+	// a worker reaches the apps its environment names (the KPI app included),
+	// the workflow manager, and the fabric it uses
+	addWorkerEdges := func(N string, o Object) {
+		pod := o["spec"].(map[string]any)["template"].(map[string]any)["spec"].(map[string]any)
+		env, _ := pod["containers"].([]any)[0].(map[string]any)["env"].([]any)
+		for _, e := range env {
+			if v, ok := e.(map[string]any)["value"].(string); ok {
+				for _, h := range urlHost.FindAllStringSubmatch(v, -1) {
+					if strings.HasPrefix(h[1], "app-") && h[1] != N {
+						add(N, appPeer(h[1]))
+					}
+				}
+			}
+		}
+		if wfmN != "" { // workers talk to the workflow manager on its worker port
+			wt := tokenLabel(in, memberOf[wfmN])
+			add(N, peer{name: wfmN, app: wfmN, port: 7380})
+			add(N, peer{name: wt, app: wt, port: 7380})
+		}
+		for _, k := range []string{"kpi", "tempo", "temporal"} {
+			add(N, fixed[k])
+		}
+	}
 	for _, o := range objs {
 		if o["kind"] != "Deployment" {
 			continue
@@ -98,6 +131,9 @@ func RenderNetworkPolicies(in *RenderInput, objs []Object, frontendIP string) []
 		N := o["metadata"].(map[string]any)["name"].(string)
 		member, ok := memberOf[N]
 		if !ok {
+			if worker[N] {
+				addWorkerEdges(N, o)
+			}
 			continue
 		}
 		var env []any
@@ -128,8 +164,20 @@ func RenderNetworkPolicies(in *RenderInput, objs []Object, frontendIP string) []
 		if names["CLICKHOUSE_DSN"] {
 			base["clickhouse"] = fixed["clickhouse"]
 		}
+		if N == iamN { // the IAM module signs in through keycloak and the front door
+			for _, k := range []string{"azure-frontend", "keycloak", "traefik-https-pod", "traefik-https-service"} {
+				base[k] = fixed[k]
+			}
+		}
 		token := tokenLabel(in, member)
-		delete(base, token) // a module never lists its own token as a peer
+		delete(base, token)                                    // a module never lists its own token as a peer
+		if _, isProduct := productKey(in, member); isProduct { // the console reads every app
+			for _, a := range in.Desc.Switcher.App {
+				if K8sName(a.App) != N {
+					base[K8sName(a.App)] = appPeer(K8sName(a.App))
+				}
+			}
+		}
 		// the module token's pods: base plus the member app
 		for _, p := range base {
 			add(token, p)
@@ -149,6 +197,34 @@ func RenderNetworkPolicies(in *RenderInput, objs []Object, frontendIP string) []
 		if iamN != "" && N != iamN {
 			add(N, appPeer(iamN))
 		}
+	}
+
+	// the fabric's own edges
+	for _, a := range in.Desc.Switcher.App { // the front door routes to every app
+		add("traefik", appPeer(K8sName(a.App)))
+	}
+	add("traefik", fixed["kubernetes-api"])
+	if in.Desc.HasFabric("keycloak") {
+		add("traefik", fixed["keycloak"])
+		add("keycloak", fixed["managed-postgres"])
+	}
+	if in.Desc.HasFabric("tracing") {
+		add("traefik", peer{name: "grafana", app: "grafana", port: 3000})
+		add("grafana", peer{name: "tempo", app: "tempo", port: 3200})
+		for _, k := range []string{"azure-frontend", "traefik-https-pod", "traefik-https-service"} {
+			add("grafana", fixed[k])
+		}
+	}
+	if in.Desc.HasFabric("temporal") {
+		add("temporal", fixed["managed-postgres"])
+		add("temporal-search-attrs", fixed["temporal"])
+	}
+	if _, ok := in.Desc.Product["helix"]; ok {
+		add("helix", fixed["managed-postgres"])
+	}
+	add("ensure-databases", fixed["managed-postgres"])
+	if iamN != "" {
+		add(iamN+"-review-close", appPeer(iamN))
 	}
 
 	meta := func(name string) map[string]any {
@@ -179,6 +255,16 @@ func RenderNetworkPolicies(in *RenderInput, objs []Object, frontendIP string) []
 		}
 	}
 	return out
+}
+
+// productKey returns the product key of a member that is a product (clc).
+func productKey(in *RenderInput, member string) (string, bool) {
+	for key, p := range in.Desc.Product {
+		if p.App == member {
+			return key, true
+		}
+	}
+	return "", false
 }
 
 // tokenLabel is the pod label of a member's module token: its first
@@ -218,6 +304,9 @@ func RenderSingletons(in *RenderInput, helixVaultURL string) []Object {
 				"ports": []any{map[string]any{"port": 53, "protocol": "UDP"}, map[string]any{"port": 53, "protocol": "TCP"}},
 				"to":    []any{map[string]any{"namespaceSelector": map[string]any{"matchLabels": map[string]any{"kubernetes.io/metadata.name": "kube-system"}}}}}},
 			"podSelector": map[string]any{}, "policyTypes": []any{"Egress"}}),
+		np("allow-traefik-ingress-from-anywhere", map[string]any{
+			"ingress":     []any{map[string]any{"ports": []any{map[string]any{"port": 8080, "protocol": "TCP"}}}},
+			"podSelector": map[string]any{"matchLabels": map[string]any{"app": "traefik"}}, "policyTypes": []any{"Ingress"}}),
 		np("allow-traefik-tls-ingress", map[string]any{
 			"ingress":     []any{map[string]any{"ports": []any{map[string]any{"port": 8443, "protocol": "TCP"}}}},
 			"podSelector": map[string]any{"matchLabels": map[string]any{"app": "traefik"}}, "policyTypes": []any{"Ingress"}}),

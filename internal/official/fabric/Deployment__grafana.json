@@ -1,0 +1,109 @@
+{
+ "apiVersion": "apps/v1",
+ "kind": "Deployment",
+ "metadata": {
+  "annotations": {},
+  "labels": {
+   "app": "grafana"
+  },
+  "name": "grafana",
+  "namespace": "{{NAMESPACE}}"
+ },
+ "spec": {
+  "replicas": 1,
+  "revisionHistoryLimit": 3,
+  "selector": {
+   "matchLabels": {
+    "app": "grafana"
+   }
+  },
+  "template": {
+   "metadata": {
+    "labels": {
+     "app": "grafana"
+    }
+   },
+   "spec": {
+    "automountServiceAccountToken": false,
+    "containers": [
+     {
+      "env": [
+       {
+        "name": "GF_AUTH_ANONYMOUS_ENABLED",
+        "value": "false"
+       },
+       {
+        "name": "GF_SECURITY_ADMIN_PASSWORD",
+        "valueFrom": {
+         "secretKeyRef": {
+          "key": "password",
+          "name": "keycloak-admin"
+         }
+        }
+       }
+      ],
+      "image": "{{IMAGE:fabric.grafana}}",
+      "name": "grafana",
+      "ports": [
+       {
+        "containerPort": 3000
+       }
+      ],
+      "resources": {
+       "limits": {
+        "memory": "256Mi"
+       },
+       "requests": {
+        "cpu": "25m",
+        "memory": "64Mi"
+       }
+      },
+      "securityContext": {
+       "allowPrivilegeEscalation": false,
+       "capabilities": {
+        "drop": [
+         "ALL"
+        ]
+       },
+       "runAsGroup": 472,
+       "runAsNonRoot": true,
+       "runAsUser": 472,
+       "seccompProfile": {
+        "type": "RuntimeDefault"
+       }
+      },
+      "volumeMounts": [
+       {
+        "mountPath": "/etc/grafana/provisioning/datasources",
+        "name": "datasources"
+       },
+       {
+        "mountPath": "/var/lib/grafana",
+        "name": "grafana-data"
+       }
+      ]
+     }
+    ],
+    "imagePullSecrets": [
+     {
+      "name": "mycel-ghcr-pull"
+     }
+    ],
+    "priorityClassName": "mycel-app",
+    "serviceAccountName": "grafana",
+    "volumes": [
+     {
+      "configMap": {
+       "name": "grafana-datasources"
+      },
+      "name": "datasources"
+     },
+     {
+      "emptyDir": {},
+      "name": "grafana-data"
+     }
+    ]
+   }
+  }
+ }
+}

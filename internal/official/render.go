@@ -42,11 +42,13 @@ type PG struct {
 // Descriptor is the part of the cluster descriptor the renderer reads.
 type Descriptor struct {
 	App []struct {
-		Name string            `toml:"name"`
-		Kind string            `toml:"kind"`
-		Host string            `toml:"host"`
-		DB   string            `toml:"db"`
-		Env  map[string]string `toml:"env"`
+		Name     string            `toml:"name"`
+		Kind     string            `toml:"kind"`
+		Host     string            `toml:"host"`
+		DB       string            `toml:"db"`
+		Temporal string            `toml:"temporal"`
+		Port     int               `toml:"port"`
+		Env      map[string]string `toml:"env"`
 	} `toml:"app"`
 	Switcher struct {
 		App []SwitcherApp `toml:"app"`
@@ -55,7 +57,11 @@ type Descriptor struct {
 		Host string `toml:"host"`
 		App  string `toml:"app"`
 	} `toml:"product"`
+	Fabric map[string]any `toml:"fabric"`
 }
+
+// HasFabric reports whether the descriptor declares [fabric.<name>].
+func (d *Descriptor) HasFabric(name string) bool { _, ok := d.Fabric[name]; return ok }
 
 // SwitcherApp is one [[switcher.app]] entry.
 type SwitcherApp struct {
@@ -147,9 +153,13 @@ func (d *Descriptor) appEntry(name string) (host, db, kind string, env map[strin
 			return a.Host, a.DB, a.Kind, a.Env, true
 		}
 	}
-	for _, p := range d.Product {
+	for key, p := range d.Product {
 		if p.App == name {
-			return p.Host, "", "product", nil, true
+			db := ""
+			if key == "clc" {
+				db = "console" // the cluster console keeps its state in its own database
+			}
+			return p.Host, db, "product", nil, true
 		}
 	}
 	return "", "", "", nil, false
@@ -426,4 +436,82 @@ func envSecret(k, key, secret string, optional bool) map[string]any {
 func probe(path string, failure, period, timeout int) map[string]any {
 	return map[string]any{"failureThreshold": failure, "httpGet": map[string]any{"path": path, "port": "http"},
 		"periodSeconds": period, "timeoutSeconds": timeout}
+}
+
+// RenderWorkers renders the project members (kind = "project", e.g. Temporal
+// workers): a ServiceAccount named after the app, a Deployment without probes
+// or volumes, and a Service when the member declares a port.
+func RenderWorkers(in *RenderInput) (objs []Object, skipped []string) {
+	kpiN := ""
+	for _, a := range in.Desc.App {
+		if a.Host == "kpi" {
+			kpiN = K8sName(a.Name)
+		}
+	}
+	meta := func(name string) map[string]any {
+		return map[string]any{"annotations": map[string]any{}, "name": name, "namespace": in.Namespace}
+	}
+	for _, a := range in.Desc.App {
+		if a.Kind != "project" {
+			continue
+		}
+		image := in.Images[a.Name]
+		if image == "" {
+			skipped = append(skipped, a.Name+" (no image in the release)")
+			continue
+		}
+		N := K8sName(a.Name)
+		vals := map[string]any{
+			"OTEL_EXPORTER_OTLP_ENDPOINT": envVal("OTEL_EXPORTER_OTLP_ENDPOINT", "http://tempo:4317"),
+			"OTEL_SERVICE_NAME":           envVal("OTEL_SERVICE_NAME", a.Name),
+			"PORT":                        envVal("PORT", "8090"),
+		}
+		if kpiN != "" {
+			vals["MYCEL_KPI_URL"] = envVal("MYCEL_KPI_URL", "http://"+kpiN+":9080")
+		}
+		if a.Temporal != "" {
+			vals["TEMPORAL_HOSTPORT"] = envVal("TEMPORAL_HOSTPORT", a.Temporal)
+			vals["TEMPORAL_NAMESPACE"] = envVal("TEMPORAL_NAMESPACE", "default")
+		}
+		for k, v := range a.Env {
+			if m := exactRef.FindStringSubmatch(v); m != nil {
+				vals[k] = envSecret(k, m[1], "mycel-app-env", false)
+			} else {
+				vals[k] = envVal(k, v)
+			}
+		}
+		var keys []string
+		for k := range vals {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		var env []any
+		for _, k := range keys {
+			env = append(env, vals[k])
+		}
+		container := map[string]any{
+			"env": env, "image": image, "imagePullPolicy": "IfNotPresent", "name": N,
+			"resources": map[string]any{"limits": map[string]any{"memory": "256Mi"}, "requests": map[string]any{"cpu": "10m", "memory": "32Mi"}},
+			"securityContext": map[string]any{"allowPrivilegeEscalation": false, "capabilities": map[string]any{"drop": []any{"ALL"}},
+				"readOnlyRootFilesystem": true, "runAsNonRoot": true, "runAsUser": 65532, "seccompProfile": map[string]any{"type": "RuntimeDefault"}},
+		}
+		if a.Port != 0 {
+			container["ports"] = []any{map[string]any{"containerPort": a.Port}}
+		}
+		objs = append(objs,
+			Object{"apiVersion": "v1", "kind": "ServiceAccount", "automountServiceAccountToken": false, "metadata": meta(N)},
+			Object{"apiVersion": "apps/v1", "kind": "Deployment",
+				"metadata": map[string]any{"annotations": map[string]any{}, "labels": map[string]any{"app": N}, "name": N, "namespace": in.Namespace},
+				"spec": map[string]any{"replicas": 1, "revisionHistoryLimit": 3,
+					"selector": map[string]any{"matchLabels": map[string]any{"app": N}},
+					"template": map[string]any{"metadata": map[string]any{"labels": map[string]any{"app": N}},
+						"spec": map[string]any{"automountServiceAccountToken": false, "containers": []any{container},
+							"imagePullSecrets": []any{map[string]any{"name": "mycel-ghcr-pull"}}, "priorityClassName": "mycel-app",
+							"serviceAccountName": N, "terminationGracePeriodSeconds": 90}}}})
+		if a.Port != 0 {
+			objs = append(objs, Object{"apiVersion": "v1", "kind": "Service", "metadata": meta(N),
+				"spec": map[string]any{"ports": []any{map[string]any{"port": a.Port, "targetPort": a.Port}}, "selector": map[string]any{"app": N}}})
+		}
+	}
+	return objs, skipped
 }

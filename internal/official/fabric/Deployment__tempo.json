@@ -1,0 +1,103 @@
+{
+ "apiVersion": "apps/v1",
+ "kind": "Deployment",
+ "metadata": {
+  "annotations": {},
+  "labels": {
+   "app": "tempo"
+  },
+  "name": "tempo",
+  "namespace": "{{NAMESPACE}}"
+ },
+ "spec": {
+  "replicas": 1,
+  "revisionHistoryLimit": 3,
+  "selector": {
+   "matchLabels": {
+    "app": "tempo"
+   }
+  },
+  "template": {
+   "metadata": {
+    "labels": {
+     "app": "tempo"
+    }
+   },
+   "spec": {
+    "automountServiceAccountToken": false,
+    "containers": [
+     {
+      "args": [
+       "-config.file=/etc/tempo/tempo.yaml"
+      ],
+      "image": "{{IMAGE:fabric.tempo}}",
+      "name": "tempo",
+      "ports": [
+       {
+        "containerPort": 4317
+       },
+       {
+        "containerPort": 4318
+       },
+       {
+        "containerPort": 3200
+       }
+      ],
+      "resources": {
+       "limits": {
+        "memory": "2Gi"
+       },
+       "requests": {
+        "cpu": "25m",
+        "memory": "512Mi"
+       }
+      },
+      "securityContext": {
+       "allowPrivilegeEscalation": false,
+       "capabilities": {
+        "drop": [
+         "ALL"
+        ]
+       },
+       "runAsGroup": 10001,
+       "runAsNonRoot": true,
+       "runAsUser": 10001,
+       "seccompProfile": {
+        "type": "RuntimeDefault"
+       }
+      },
+      "volumeMounts": [
+       {
+        "mountPath": "/etc/tempo",
+        "name": "config"
+       },
+       {
+        "mountPath": "/var/tempo",
+        "name": "tempo-data"
+       }
+      ]
+     }
+    ],
+    "imagePullSecrets": [
+     {
+      "name": "mycel-ghcr-pull"
+     }
+    ],
+    "priorityClassName": "mycel-app",
+    "serviceAccountName": "tempo",
+    "volumes": [
+     {
+      "configMap": {
+       "name": "tempo-config"
+      },
+      "name": "config"
+     },
+     {
+      "emptyDir": {},
+      "name": "tempo-data"
+     }
+    ]
+   }
+  }
+ }
+}

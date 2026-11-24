@@ -1,0 +1,206 @@
+{
+ "apiVersion": "apps/v1",
+ "kind": "StatefulSet",
+ "metadata": {
+  "annotations": {},
+  "labels": {
+   "app": "clickhouse"
+  },
+  "name": "clickhouse",
+  "namespace": "{{NAMESPACE}}"
+ },
+ "spec": {
+  "persistentVolumeClaimRetentionPolicy": {
+   "whenDeleted": "Retain",
+   "whenScaled": "Retain"
+  },
+  "replicas": 1,
+  "revisionHistoryLimit": 3,
+  "selector": {
+   "matchLabels": {
+    "app": "clickhouse"
+   }
+  },
+  "serviceName": "clickhouse-storage",
+  "template": {
+   "metadata": {
+    "annotations": {
+     "mycel.build/clickhouse-config-sha": "baa259b9f871b1e6"
+    },
+    "labels": {
+     "app": "clickhouse"
+    }
+   },
+   "spec": {
+    "automountServiceAccountToken": false,
+    "containers": [
+     {
+      "env": [
+       {
+        "name": "MYCEL_CLICKHOUSE_ADMIN_PASSWORD",
+        "valueFrom": {
+         "secretKeyRef": {
+          "key": "password",
+          "name": "clickhouse-admin"
+         }
+        }
+       },
+       {
+        "name": "MYCEL_CLICKHOUSE_WRITER_PASSWORD",
+        "valueFrom": {
+         "secretKeyRef": {
+          "key": "password",
+          "name": "clickhouse-kpi-writer"
+         }
+        }
+       },
+       {
+        "name": "MYCEL_CLICKHOUSE_READER_PASSWORD",
+        "valueFrom": {
+         "secretKeyRef": {
+          "key": "password",
+          "name": "clickhouse-kpi-reader"
+         }
+        }
+       }
+      ],
+      "image": "{{IMAGE:fabric.clickhouse}}",
+      "name": "clickhouse",
+      "ports": [
+       {
+        "containerPort": 8123
+       },
+       {
+        "containerPort": 9000
+       }
+      ],
+      "readinessProbe": {
+       "httpGet": {
+        "path": "/ping",
+        "port": 8123
+       },
+       "initialDelaySeconds": 10,
+       "periodSeconds": 5
+      },
+      "resources": {
+       "limits": {
+        "memory": "3Gi"
+       },
+       "requests": {
+        "cpu": "100m",
+        "memory": "512Mi"
+       }
+      },
+      "securityContext": {
+       "allowPrivilegeEscalation": false,
+       "capabilities": {
+        "drop": [
+         "ALL"
+        ]
+       },
+       "runAsGroup": 101,
+       "runAsNonRoot": true,
+       "runAsUser": 101,
+       "seccompProfile": {
+        "type": "RuntimeDefault"
+       }
+      },
+      "volumeMounts": [
+       {
+        "mountPath": "/etc/clickhouse-server/users.d/mycel.xml",
+        "name": "cfg",
+        "subPath": "mycel-users.xml"
+       },
+       {
+        "mountPath": "/etc/clickhouse-server/config.d/mycel.xml",
+        "name": "cfg",
+        "subPath": "mycel-config.xml"
+       },
+       {
+        "mountPath": "/var/lib/clickhouse",
+        "name": "clickhouse-data"
+       }
+      ]
+     }
+    ],
+    "imagePullSecrets": [
+     {
+      "name": "mycel-ghcr-pull"
+     }
+    ],
+    "initContainers": [
+     {
+      "command": [
+       "sh",
+       "-c",
+       "chown -R 101:101 /var/lib/clickhouse"
+      ],
+      "image": "{{IMAGE:fabric.clickhouse}}",
+      "name": "fix-clickhouse-data-ownership",
+      "resources": {
+       "limits": {
+        "memory": "128Mi"
+       },
+       "requests": {
+        "cpu": "10m",
+        "memory": "32Mi"
+       }
+      },
+      "securityContext": {
+       "allowPrivilegeEscalation": false,
+       "capabilities": {
+        "add": [
+         "CHOWN"
+        ],
+        "drop": [
+         "ALL"
+        ]
+       },
+       "runAsUser": 0,
+       "seccompProfile": {
+        "type": "RuntimeDefault"
+       }
+      },
+      "volumeMounts": [
+       {
+        "mountPath": "/var/lib/clickhouse",
+        "name": "clickhouse-data"
+       }
+      ]
+     }
+    ],
+    "priorityClassName": "mycel-fabric",
+    "securityContext": {
+     "fsGroup": 101
+    },
+    "serviceAccountName": "clickhouse",
+    "volumes": [
+     {
+      "configMap": {
+       "name": "clickhouse-config"
+      },
+      "name": "cfg"
+     }
+    ]
+   }
+  },
+  "volumeClaimTemplates": [
+   {
+    "metadata": {
+     "name": "clickhouse-data"
+    },
+    "spec": {
+     "accessModes": [
+      "ReadWriteOnce"
+     ],
+     "resources": {
+      "requests": {
+       "storage": "{{DURABLE_SIZE}}"
+      }
+     },
+     "storageClassName": "{{DURABLE_CLASS}}"
+    }
+   }
+  ]
+ }
+}

@@ -54,6 +54,14 @@ func runOfficialPlan(c *cli.Ctx, m *descriptor.Model, l *official.Layout, e *env
 		in.TraefikIP = ip
 	}
 	objs, shadow, skipped := official.RenderAppCore(in)
+	workers, wskipped := official.RenderWorkers(in)
+	objs, skipped = append(objs, workers...), append(skipped, wskipped...)
+	tables := map[string]map[string]string{}
+	for _, t := range []string{"fabric", "products", "knowledge_base", "modules"} {
+		tables[t] = rec.Table(t)
+	}
+	fabric, fskipped := official.RenderFabric(in, official.LoadFabricVars(m.Dir, env, tables))
+	objs, skipped = append(objs, fabric...), append(skipped, fskipped...)
 	objs = append(objs, official.RenderNetworkPolicies(in, append(append([]official.Object{}, objs...), shadow...), official.LoadFrontendIP(m.Dir, env))...)
 	objs = append(objs, official.RenderSingletons(in, official.LoadHelixVaultURL(m.Dir, env))...)
 
@@ -118,8 +126,7 @@ func runOfficialPlan(c *cli.Ctx, m *descriptor.Model, l *official.Layout, e *env
 		}
 	}
 	ui.OK("release %s on %s: %d unchanged, %d to change, %d to create (of %d rendered objects)", version, env, n["unchanged"], n["change"], n["create"], len(objs))
-	ui.Note("rendered: every switcher app's ServiceAccount, Service, Ingress, delegation ConfigMap and Deployment (except the IAM and console Deployments), their NetworkPolicies, and the namespace-wide policies")
-	ui.Note("not rendered yet: the workers, the fabric (traefik, temporal, keycloak, grafana, tempo, helix, clickhouse) with their jobs and policies, and the IAM and console Deployments")
+	ui.Note("not rendered yet: the IAM and console Deployments, and the generated IAM configuration, IAM schema, database list and secrets fingerprint ConfigMaps")
 	for _, s := range skipped {
 		ui.Sub("not rendered yet: %s", s)
 	}

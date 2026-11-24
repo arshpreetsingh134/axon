@@ -273,3 +273,11 @@ Next:
   - the two workers;
   - the fabric (traefik, temporal, keycloak, grafana, tempo, helix, clickhouse), with its jobs, ConfigMaps and
     policies.
+- **Later the same day:** the workers and the fabric are rendered too. Against QA's release 0.1.19, `env plan`
+  gives **1,283 of 1,283 rendered objects unchanged**, out of the 1,289 a deploy applies. The fabric objects (front
+  door, workflow engine, identity provider, tracing, analytics store, knowledge base) come from embedded templates
+  with placeholders for every value that varies by cluster, environment or release, and are emitted only when the
+  descriptor declares them. Six objects are left:
+  - the IAM and console Deployments (runtime inputs);
+  - the generated IAM configuration, the IAM database schema (shipped inside the IAM image) and the database list;
+  - a fingerprint of secret values, which a reader role cannot compute.

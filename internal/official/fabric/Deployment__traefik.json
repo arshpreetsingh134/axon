@@ -1,0 +1,130 @@
+{
+ "apiVersion": "apps/v1",
+ "kind": "Deployment",
+ "metadata": {
+  "annotations": {},
+  "labels": {
+   "app": "traefik"
+  },
+  "name": "traefik",
+  "namespace": "{{NAMESPACE}}"
+ },
+ "spec": {
+  "replicas": 2,
+  "revisionHistoryLimit": 3,
+  "selector": {
+   "matchLabels": {
+    "app": "traefik"
+   }
+  },
+  "template": {
+   "metadata": {
+    "labels": {
+     "app": "traefik"
+    }
+   },
+   "spec": {
+    "containers": [
+     {
+      "args": [
+       "--entrypoints.web.address=:8080",
+       "--providers.kubernetesingress",
+       "--providers.kubernetesingress.ingressclass=traefik",
+       "--providers.kubernetesingress.namespaces={{NAMESPACE}}",
+       "--ping=true",
+       "--ping.entrypoint=web",
+       "--entrypoints.traefik.address=:8082",
+       "--api=true",
+       "--api.dashboard=false",
+       "--api.insecure=true",
+       "--metrics.prometheus=true",
+       "--metrics.prometheus.entrypoint=traefik",
+       "--metrics.prometheus.addRoutersLabels=true",
+       "--metrics.prometheus.addServicesLabels=true",
+       "--entrypoints.websecure.address=:8443",
+       "--entrypoints.websecure.http.tls=true",
+       "--providers.file.directory=/etc/traefik/dynamic"
+      ],
+      "image": "{{IMAGE:fabric.traefik}}",
+      "name": "traefik",
+      "ports": [
+       {
+        "containerPort": 8080,
+        "name": "web"
+       },
+       {
+        "containerPort": 8082,
+        "name": "observe"
+       }
+      ],
+      "readinessProbe": {
+       "httpGet": {
+        "path": "/ping",
+        "port": 8080
+       },
+       "initialDelaySeconds": 3,
+       "periodSeconds": 5
+      },
+      "resources": {
+       "limits": {
+        "memory": "128Mi"
+       },
+       "requests": {
+        "cpu": "25m",
+        "memory": "64Mi"
+       }
+      },
+      "securityContext": {
+       "allowPrivilegeEscalation": false,
+       "capabilities": {
+        "drop": [
+         "ALL"
+        ]
+       },
+       "readOnlyRootFilesystem": true,
+       "runAsGroup": 65532,
+       "runAsNonRoot": true,
+       "runAsUser": 65532,
+       "seccompProfile": {
+        "type": "RuntimeDefault"
+       }
+      },
+      "volumeMounts": [
+       {
+        "mountPath": "/etc/traefik/dynamic",
+        "name": "traefik-dynamic",
+        "readOnly": true
+       },
+       {
+        "mountPath": "/etc/traefik/tls",
+        "name": "traefik-tls",
+        "readOnly": true
+       }
+      ]
+     }
+    ],
+    "imagePullSecrets": [
+     {
+      "name": "mycel-ghcr-pull"
+     }
+    ],
+    "priorityClassName": "mycel-fabric",
+    "serviceAccountName": "traefik",
+    "volumes": [
+     {
+      "configMap": {
+       "name": "traefik-dynamic"
+      },
+      "name": "traefik-dynamic"
+     },
+     {
+      "name": "traefik-tls",
+      "secret": {
+       "secretName": "mycel-frontend-tls"
+      }
+     }
+    ]
+   }
+  }
+ }
+}

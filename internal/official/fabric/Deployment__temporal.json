@@ -1,0 +1,143 @@
+{
+ "apiVersion": "apps/v1",
+ "kind": "Deployment",
+ "metadata": {
+  "annotations": {},
+  "labels": {
+   "app": "temporal"
+  },
+  "name": "temporal",
+  "namespace": "{{NAMESPACE}}"
+ },
+ "spec": {
+  "replicas": 1,
+  "revisionHistoryLimit": 3,
+  "selector": {
+   "matchLabels": {
+    "app": "temporal"
+   }
+  },
+  "template": {
+   "metadata": {
+    "labels": {
+     "app": "temporal"
+    }
+   },
+   "spec": {
+    "automountServiceAccountToken": false,
+    "containers": [
+     {
+      "env": [
+       {
+        "name": "BIND_ON_IP",
+        "value": "0.0.0.0"
+       },
+       {
+        "name": "DB",
+        "value": "postgres12"
+       },
+       {
+        "name": "DB_PORT",
+        "value": "5432"
+       },
+       {
+        "name": "POSTGRES_USER",
+        "value": "{{PG_USER}}"
+       },
+       {
+        "name": "POSTGRES_PWD",
+        "valueFrom": {
+         "secretKeyRef": {
+          "key": "password",
+          "name": "postgres-credentials"
+         }
+        }
+       },
+       {
+        "name": "POSTGRES_TLS_ENABLED",
+        "value": "true"
+       },
+       {
+        "name": "POSTGRES_TLS_CA_FILE",
+        "value": "/etc/ssl/certs/ca-certificates.crt"
+       },
+       {
+        "name": "POSTGRES_TLS_SERVER_NAME",
+        "value": "{{PG_HOST}}"
+       },
+       {
+        "name": "SQL_TLS_ENABLED",
+        "value": "true"
+       },
+       {
+        "name": "SQL_CA",
+        "value": "/etc/ssl/certs/ca-certificates.crt"
+       },
+       {
+        "name": "SQL_HOST_VERIFICATION",
+        "value": "true"
+       },
+       {
+        "name": "SQL_HOST_NAME",
+        "value": "{{PG_HOST}}"
+       },
+       {
+        "name": "POSTGRES_SEEDS",
+        "value": "{{PG_HOST}}"
+       },
+       {
+        "name": "NUM_HISTORY_SHARDS",
+        "value": "128"
+       },
+       {
+        "name": "SKIP_ADD_CUSTOM_SEARCH_ATTRIBUTES",
+        "value": "true"
+       },
+       {
+        "name": "PROMETHEUS_ENDPOINT",
+        "value": "0.0.0.0:9090"
+       }
+      ],
+      "image": "{{IMAGE:fabric.temporal}}",
+      "name": "temporal",
+      "ports": [
+       {
+        "containerPort": 7233
+       },
+       {
+        "containerPort": 9090
+       }
+      ],
+      "resources": {
+       "limits": {
+        "memory": "1Gi"
+       },
+       "requests": {
+        "cpu": "100m",
+        "memory": "256Mi"
+       }
+      },
+      "securityContext": {
+       "allowPrivilegeEscalation": false,
+       "capabilities": {
+        "drop": [
+         "ALL"
+        ]
+       },
+       "seccompProfile": {
+        "type": "RuntimeDefault"
+       }
+      }
+     }
+    ],
+    "imagePullSecrets": [
+     {
+      "name": "mycel-ghcr-pull"
+     }
+    ],
+    "priorityClassName": "mycel-fabric",
+    "serviceAccountName": "temporal"
+   }
+  }
+ }
+}

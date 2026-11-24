@@ -1,0 +1,156 @@
+{
+ "apiVersion": "apps/v1",
+ "kind": "Deployment",
+ "metadata": {
+  "annotations": {},
+  "labels": {
+   "app": "keycloak"
+  },
+  "name": "keycloak",
+  "namespace": "{{NAMESPACE}}"
+ },
+ "spec": {
+  "replicas": 1,
+  "revisionHistoryLimit": 3,
+  "selector": {
+   "matchLabels": {
+    "app": "keycloak"
+   }
+  },
+  "template": {
+   "metadata": {
+    "labels": {
+     "app": "keycloak"
+    }
+   },
+   "spec": {
+    "automountServiceAccountToken": false,
+    "containers": [
+     {
+      "args": [
+       "start",
+       "--http-port=8080",
+       "--health-enabled=true",
+       "--metrics-enabled=true"
+      ],
+      "command": [
+       "/bin/bash",
+       "-ec",
+       "export KC_DB_PASSWORD=\"${KC_DB_PASSWORD//\\$/\\\\\\$}\"\nexec /opt/keycloak/bin/kc.sh \"$@\"\n",
+       "mycel-keycloak"
+      ],
+      "env": [
+       {
+        "name": "KEYCLOAK_ADMIN",
+        "value": "admin"
+       },
+       {
+        "name": "KEYCLOAK_ADMIN_PASSWORD",
+        "valueFrom": {
+         "secretKeyRef": {
+          "key": "password",
+          "name": "keycloak-admin"
+         }
+        }
+       },
+       {
+        "name": "KC_HOSTNAME",
+        "value": "https://keycloak.{{DOMAIN}}"
+       },
+       {
+        "name": "KC_HOSTNAME_STRICT",
+        "value": "true"
+       },
+       {
+        "name": "KC_HTTP_ENABLED",
+        "value": "true"
+       },
+       {
+        "name": "KC_PROXY_HEADERS",
+        "value": "xforwarded"
+       },
+       {
+        "name": "KC_DB",
+        "value": "postgres"
+       },
+       {
+        "name": "KC_DB_URL",
+        "value": "jdbc:postgresql://{{PG_HOST}}:5432/keycloak"
+       },
+       {
+        "name": "KC_DB_USERNAME",
+        "value": "{{PG_USER}}"
+       },
+       {
+        "name": "KC_DB_PASSWORD",
+        "valueFrom": {
+         "secretKeyRef": {
+          "key": "password",
+          "name": "postgres-credentials"
+         }
+        }
+       }
+      ],
+      "image": "{{IMAGE:fabric.keycloak}}",
+      "name": "keycloak",
+      "ports": [
+       {
+        "containerPort": 8080
+       },
+       {
+        "containerPort": 9000
+       }
+      ],
+      "readinessProbe": {
+       "failureThreshold": 3,
+       "httpGet": {
+        "path": "/health/ready",
+        "port": 9000
+       },
+       "periodSeconds": 5,
+       "timeoutSeconds": 3
+      },
+      "resources": {
+       "limits": {
+        "memory": "2Gi"
+       },
+       "requests": {
+        "cpu": "100m",
+        "memory": "512Mi"
+       }
+      },
+      "securityContext": {
+       "allowPrivilegeEscalation": false,
+       "capabilities": {
+        "drop": [
+         "ALL"
+        ]
+       },
+       "runAsGroup": 1000,
+       "runAsNonRoot": true,
+       "runAsUser": 1000,
+       "seccompProfile": {
+        "type": "RuntimeDefault"
+       }
+      },
+      "startupProbe": {
+       "failureThreshold": 30,
+       "httpGet": {
+        "path": "/health/started",
+        "port": 9000
+       },
+       "periodSeconds": 5
+      }
+     }
+    ],
+    "imagePullSecrets": [
+     {
+      "name": "mycel-ghcr-pull"
+     }
+    ],
+    "priorityClassName": "mycel-fabric",
+    "serviceAccountName": "keycloak"
+   }
+  }
+ }
+}

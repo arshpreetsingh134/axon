@@ -181,3 +181,38 @@ func TestPlanDiff(t *testing.T) {
 		t.Errorf("fresh: %+v", p)
 	}
 }
+
+func TestRenderFabricFillsAndGates(t *testing.T) {
+	in := renderFixture(t)
+	v := FabricVars{ResourceGroup: "rg-x", FrontendName: "fe-x", DurableClass: "disk", DurableSize: "9Gi",
+		Release: map[string]map[string]string{"fabric": {"traefik": "reg/traefik@sha256:aa"}}}
+	objs, skipped := RenderFabric(in, v)
+	m := byKey(objs)
+	svc, ok := m["Service/traefik"]
+	if !ok {
+		t.Fatalf("no traefik service; skipped %v", skipped)
+	}
+	ann := svc["metadata"].(map[string]any)["annotations"].(map[string]any)
+	if ann["service.beta.kubernetes.io/azure-load-balancer-resource-group"] != "rg-x" || ann["service.beta.kubernetes.io/azure-pip-name"] != "fe-x" {
+		t.Errorf("traefik annotations %v", ann)
+	}
+	if svc["metadata"].(map[string]any)["namespace"] != "ns" {
+		t.Error("namespace not filled")
+	}
+	if _, ok := m["Deployment/traefik"]; !ok {
+		t.Errorf("traefik deployment missing: %v", skipped)
+	}
+	// the fixture declares no keycloak, temporal, tracing, clickhouse or helix
+	for k := range m {
+		for _, absent := range []string{"keycloak", "temporal", "grafana", "tempo", "clickhouse", "helix"} {
+			if strings.Contains(k, "/"+absent) {
+				t.Errorf("%s rendered without its declaration", k)
+			}
+		}
+	}
+	for _, o := range objs {
+		if b, _ := json.Marshal(o); strings.Contains(string(b), "{{") {
+			t.Errorf("unfilled placeholder in %s", Key(o))
+		}
+	}
+}
