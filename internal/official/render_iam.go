@@ -2,19 +2,22 @@ package official
 
 import (
 	"bytes"
+	"crypto/sha1"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"path/filepath"
 	"sort"
+	"strings"
 
 	"github.com/BurntSushi/toml"
 )
 
 // IAMRuntime holds the IAM configuration values a deploy derives from secrets
 // or that axon cannot yet recompute: each application's public key and catalog
-// version, each person's subject, and the configuration annotation. They are
+// version, and the configuration annotation. (Subjects are computed; see
+// DemoSubject. Live subjects are kept for reference only.) They are
 // read from the live ConfigMap; new entries without one are reported.
 type IAMRuntime struct {
 	PublicJWK      map[string]json.RawMessage // application id → key
@@ -221,11 +224,7 @@ func RenderIAMConfig(in *RenderInput, people []DemoPerson, realm, client string,
 				teams = append(teams, t)
 			}
 		}
-		sub := rt.Subject[p.Email]
-		if sub == "" {
-			unknown = append(unknown, "subject of "+p.Email+" (assigned at deploy)")
-		}
-		ps = append(ps, person{Subject: sub, Issuer: issuer, Email: p.Email, Name: p.Name, Teams: teams})
+		ps = append(ps, person{Subject: DemoSubject(realm, p.Email), Issuer: issuer, Email: p.Email, Name: p.Name, Teams: teams})
 	}
 	sort.Slice(ps, func(i, j int) bool { return ps[i].Email < ps[j].Email })
 	seed := encodeJSON(struct {
@@ -242,4 +241,20 @@ func RenderIAMConfig(in *RenderInput, people []DemoPerson, realm, client string,
 	return Object{"apiVersion": "v1", "kind": "ConfigMap",
 		"metadata": map[string]any{"annotations": ann, "name": "mycel-iam-configuration", "namespace": in.Namespace},
 		"data":     map[string]any{"applications.json": applications, "providers.json": providers, "seed.json": seed}}, unknown
+}
+
+// dnsNamespace is the RFC 4122 DNS namespace (6ba7b810-9dad-11d1-80b4-00c04fd430c8).
+var dnsNamespace = [16]byte{0x6b, 0xa7, 0xb8, 0x10, 0x9d, 0xad, 0x11, 0xd1, 0x80, 0xb4, 0x00, 0xc0, 0x4f, 0xd4, 0x30, 0xc8}
+
+// DemoSubject is the subject a declared demo person gets in the identity
+// provider: a version-5 UUID in the DNS namespace of the realm, a zero byte and
+// the lower-cased email (SPEC.md Appendix C.10).
+func DemoSubject(realm, email string) string {
+	h := sha1.New()
+	h.Write(dnsNamespace[:])
+	h.Write([]byte(realm + "\x00" + strings.ToLower(email)))
+	u := h.Sum(nil)[:16]
+	u[6] = u[6]&0x0f | 0x50 // version 5
+	u[8] = u[8]&0x3f | 0x80 // RFC 4122 variant
+	return fmt.Sprintf("%x-%x-%x-%x-%x", u[0:4], u[4:6], u[6:8], u[8:10], u[10:16])
 }
