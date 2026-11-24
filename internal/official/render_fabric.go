@@ -136,3 +136,55 @@ func RenderFabric(in *RenderInput, v FabricVars) (objs []Object, skipped []strin
 	}
 	return objs, skipped
 }
+
+//go:embed sql/*.sql
+var sqlFiles embed.FS
+
+// Databases lists the logical databases an official deploy ensures, in order:
+// every [[app]] db in descriptor order, then the products' (the console), the
+// identity provider's and the knowledge base's.
+func (d *Descriptor) Databases() []string {
+	var out []string
+	seen := map[string]bool{}
+	add := func(db string) {
+		if db != "" && !seen[db] {
+			seen[db] = true
+			out = append(out, db)
+		}
+	}
+	for _, a := range d.App {
+		add(a.DB)
+	}
+	if _, ok := d.Product["clc"]; ok {
+		add("console")
+	}
+	if d.HasFabric("keycloak") {
+		add("keycloak")
+	}
+	if _, ok := d.Product["helix"]; ok {
+		add("helix")
+	}
+	return out
+}
+
+// RenderDatabases renders the ConfigMap of the job that creates every logical
+// database and installs the audit extension in each.
+func RenderDatabases(in *RenderInput) Object {
+	header, _ := sqlFiles.ReadFile("sql/databases-header.sql")
+	block, _ := sqlFiles.ReadFile("sql/audit-block.sql")
+	probe, _ := sqlFiles.ReadFile("sql/audit-probe.sql")
+	var b strings.Builder
+	b.Write(header)
+	dbs := in.Desc.Databases()
+	for _, db := range dbs {
+		fmt.Fprintf(&b, "SELECT 'CREATE DATABASE %s' WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = '%s')\\gexec\n", db, db)
+	}
+	b.WriteString("-- Install pgAudit in every managed database.\n")
+	for _, db := range append([]string{"postgres"}, dbs...) {
+		b.WriteString("\\connect " + db + "\n")
+		b.Write(block)
+	}
+	return Object{"apiVersion": "v1", "kind": "ConfigMap",
+		"metadata": map[string]any{"annotations": map[string]any{}, "name": "ensure-databases", "namespace": in.Namespace},
+		"data":     map[string]any{"01-databases.sql": b.String(), "02-audit-probe.sql": string(probe)}}
+}

@@ -216,3 +216,56 @@ func TestRenderFabricFillsAndGates(t *testing.T) {
 		}
 	}
 }
+
+func TestRenderDatabases(t *testing.T) {
+	in := renderFixture(t)
+	cm := Normalize(RenderDatabases(in))
+	sql := cm["data"].(map[string]any)["01-databases.sql"].(string)
+	if !strings.Contains(sql, "CREATE DATABASE kpi'") || !strings.Contains(sql, "CREATE DATABASE shop'") {
+		t.Fatalf("missing databases:\n%s", sql)
+	}
+	if strings.Index(sql, "CREATE DATABASE kpi'") > strings.Index(sql, "CREATE DATABASE shop'") {
+		t.Error("databases must follow descriptor order")
+	}
+	if strings.Contains(sql, "CREATE DATABASE orders") {
+		t.Error("a member without db got a database")
+	}
+	if n := strings.Count(sql, "\\connect "); n != 3 { // postgres + kpi + shop
+		t.Errorf("%d audit connects", n)
+	}
+	if !strings.HasSuffix(sql, "$;\n") {
+		t.Error("file must end after the last audit block")
+	}
+}
+
+func TestRenderIAMConfig(t *testing.T) {
+	in := renderFixture(t)
+	people := []DemoPerson{{Email: "z@example.test", Name: "z", Teams: []string{"example.shop.app.access", "unknown.app.access"}},
+		{Email: "a@example.test", Name: "a", Teams: []string{"example.kpi.members"}}}
+	rt := IAMRuntime{PublicJWK: map[string]json.RawMessage{"example.shop.app": json.RawMessage(`{"kty":"EC"}`)},
+		CatalogVersion: map[string]string{}, Subject: map[string]string{"a@example.test": "sub-a"}}
+	cm, unknown := RenderIAMConfig(in, people, "realm-x", "client-x", rt)
+	data := Normalize(cm)["data"].(map[string]any)
+	apps := data["applications.json"].(string)
+	if strings.Index(apps, `"example.kpi"`) > strings.Index(apps, `"example.orders.app"`) {
+		t.Error("applications must be sorted by id")
+	}
+	if !strings.Contains(apps, `"catalog_version": "r59de7db43982"`) {
+		t.Error("the business catalog version must be computed")
+	}
+	seed := data["seed.json"].(string)
+	if strings.Index(seed, "a@example.test") > strings.Index(seed, "z@example.test") || strings.Contains(seed, "unknown.app.access") {
+		t.Errorf("seed order or team filter wrong:\n%s", seed)
+	}
+	if !strings.Contains(data["providers.json"].(string), `"issuer": "https://keycloak.example.test/realms/realm-x"`) {
+		t.Error("provider issuer")
+	}
+	want := map[string]bool{"catalog version of example.kpi": true, "public key of example.kpi (generated at deploy)": true,
+		"public key of example.orders.app (generated at deploy)": true, "subject of z@example.test (assigned at deploy)": true}
+	for _, u := range unknown {
+		delete(want, u)
+	}
+	if len(want) != 0 {
+		t.Errorf("unreported unknowns %v (got %v)", want, unknown)
+	}
+}

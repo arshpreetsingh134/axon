@@ -281,3 +281,13 @@ Next:
   - the IAM and console Deployments (runtime inputs);
   - the generated IAM configuration, the IAM database schema (shipped inside the IAM image) and the database list;
   - a fingerprint of secret values, which a reader role cannot compute.
+- **IAM configuration and database list:**
+  - The database job's ConfigMap renders byte-for-byte from the descriptor (databases in order, plus the audit
+    extension in each).
+  - The IAM configuration renders its structure from the descriptor and the declared demo people. Each
+    application's public key, the platform catalogs' versions and each person's subject are runtime values read
+    from the live ConfigMap; new entries without one are reported, never invented.
+  - The IAM Deployment renders with its two runtime inputs (the first administrator's subject and the
+    configuration hash) read live.
+  - On QA: **1,286 of 1,286 rendered objects unchanged**. Left: the console Deployment, the IAM schema ConfigMap
+    (inside the IAM image) and the secrets fingerprint.

@@ -26,9 +26,16 @@ type RenderInput struct {
 	PG           PG                // managed Postgres (platforms/<env>.outputs.json)
 	Images       map[string]string // release record [modules]: member → image@digest
 	TraefikIP    string            // ClusterIP of the traefik-internal Service (hostAliases); live
-	Desc         *Descriptor
-	Titles       map[string]string   // member → materialization [app] title
-	Tokens       map[string][]string // member → materialization [[compose]] tokens
+	ClusterName  string            // the descriptor's name (the default first IAM administrator is admin@<name>.com)
+
+	// The IAM Deployment's runtime inputs, read from the cluster: the first
+	// administrator's subject and the IAM configuration's hash. Without both
+	// the IAM Deployment is not rendered.
+	IAMFirstAdminSubject string
+	IAMConfigHash        string
+	Desc                 *Descriptor
+	Titles               map[string]string   // member → materialization [app] title
+	Tokens               map[string][]string // member → materialization [[compose]] tokens
 }
 
 // PG is the managed Postgres an official environment uses.
@@ -346,9 +353,34 @@ func RenderAppCore(in *RenderInput) (objs, shadow []Object, skipped []string) {
 			keys = append(keys, k)
 		}
 		sort.Strings(keys)
+		isIAM := kind == "iam"
+		if isIAM { // the IAM module runs in cluster mode from its mounted configuration
+			for k, v := range map[string]string{
+				"MYCEL_DEFAULT_RETURN_TO":       "https://" + host + "." + in.Domain + "/",
+				"MYCEL_IAM_APPLICATIONS_FILE":   "/etc/mycel/iam/applications.json",
+				"MYCEL_IAM_FIRST_ADMIN_EMAIL":   "admin@" + in.ClusterName + ".com",
+				"MYCEL_IAM_FIRST_ADMIN_SUBJECT": in.IAMFirstAdminSubject,
+				"MYCEL_IAM_MODE":                "cluster",
+				"MYCEL_IAM_OIDC_PROVIDERS_FILE": "/etc/mycel/iam/providers.json",
+				"MYCEL_IAM_REALM":               in.Namespace,
+				"MYCEL_IAM_SEED_FILE":           "/etc/mycel/iam/seed.json",
+			} {
+				rest[k] = envVal(k, v)
+				if !contains(keys, k) {
+					keys = append(keys, k)
+				}
+			}
+			sort.Strings(keys)
+		}
 		env := head
 		for _, k := range keys {
 			env = append(env, rest[k])
+		}
+		if isIAM {
+			env = append(env,
+				envSecret("MYCEL_IAM_SIGNING_KEY", "key.pem", "mycel-iam-signing-keys", false),
+				envSecret("MYCEL_IAM_SIGNING_KEY_PREVIOUS", "previous.pem", "mycel-iam-signing-keys", true),
+				envSecret("MYCEL_IAM_PROVIDER_SECRETS", "providers", "mycel-iam-provider-secrets", false))
 		}
 
 		container := map[string]any{
@@ -396,7 +428,15 @@ func RenderAppCore(in *RenderInput) (objs, shadow []Object, skipped []string) {
 						"annotations": map[string]any{"mycel.dev/host-apps": short16(string(hostApps)), "mycel.dev/host-delegation-targets": short16(string(targets))},
 						"labels":      map[string]any{"app": N}},
 					"spec": pod}}}
-		if kind == "iam" || console {
+		if isIAM {
+			container["volumeMounts"] = append(container["volumeMounts"].([]any), map[string]any{"mountPath": "/etc/mycel/iam", "name": "mycel-iam-configuration", "readOnly": true})
+			pod["volumes"] = append(pod["volumes"].([]any), map[string]any{"configMap": map[string]any{"name": "mycel-iam-configuration"}, "name": "mycel-iam-configuration"})
+			ann := dep["spec"].(map[string]any)["template"].(map[string]any)["metadata"].(map[string]any)["annotations"].(map[string]any)
+			ann["mycel.dev/first-admin-subject"] = in.IAMFirstAdminSubject
+			ann["mycel.dev/iam-configuration"] = in.IAMConfigHash
+			dep["spec"].(map[string]any)["strategy"] = map[string]any{"type": "Recreate"}
+		}
+		if (isIAM && (in.IAMFirstAdminSubject == "" || in.IAMConfigHash == "")) || console {
 			skipped = append(skipped, "Deployment/"+N+" (needs runtime inputs: the IAM configuration and first admin, or the console topology)")
 			shadow = append(shadow, dep)
 			continue
@@ -514,4 +554,13 @@ func RenderWorkers(in *RenderInput) (objs []Object, skipped []string) {
 		}
 	}
 	return objs, skipped
+}
+
+func contains(l []string, s string) bool {
+	for _, x := range l {
+		if x == s {
+			return true
+		}
+	}
+	return false
 }

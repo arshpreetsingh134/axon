@@ -53,6 +53,10 @@ func runOfficialPlan(c *cli.Ctx, m *descriptor.Model, l *official.Layout, e *env
 		}
 		in.TraefikIP = ip
 	}
+	in.ClusterName = m.C.Name
+	if !offline {
+		in.IAMFirstAdminSubject, in.IAMConfigHash = liveIAMInputs(ctx, e.Namespace, desc)
+	}
 	objs, shadow, skipped := official.RenderAppCore(in)
 	workers, wskipped := official.RenderWorkers(in)
 	objs, skipped = append(objs, workers...), append(skipped, wskipped...)
@@ -62,6 +66,23 @@ func runOfficialPlan(c *cli.Ctx, m *descriptor.Model, l *official.Layout, e *env
 	}
 	fabric, fskipped := official.RenderFabric(in, official.LoadFabricVars(m.Dir, env, tables))
 	objs, skipped = append(objs, fabric...), append(skipped, fskipped...)
+	objs = append(objs, official.RenderDatabases(in))
+	if kc, ok := desc.Fabric["keycloak"].(map[string]any); ok {
+		var liveIAM official.Object
+		if !offline {
+			if out, err := sh.Output("kubectl", "--context", ctx, "-n", e.Namespace, "get", "configmap", "mycel-iam-configuration",
+				"-o", `jsonpath={.metadata.annotations.kubectl\.kubernetes\.io/last-applied-configuration}`); err == nil && out != "" {
+				_ = json.Unmarshal([]byte(out), &liveIAM)
+			}
+		}
+		realm, _ := kc["realm"].(string)
+		client, _ := kc["client"].(string)
+		iam, unknown := official.RenderIAMConfig(in, official.LoadDemoPeople(m.Dir), realm, client, official.LiveIAMRuntime(liveIAM))
+		objs = append(objs, iam)
+		for _, u := range unknown {
+			skipped = append(skipped, "IAM configuration: "+u)
+		}
+	}
 	objs = append(objs, official.RenderNetworkPolicies(in, append(append([]official.Object{}, objs...), shadow...), official.LoadFrontendIP(m.Dir, env))...)
 	objs = append(objs, official.RenderSingletons(in, official.LoadHelixVaultURL(m.Dir, env))...)
 
@@ -126,9 +147,37 @@ func runOfficialPlan(c *cli.Ctx, m *descriptor.Model, l *official.Layout, e *env
 		}
 	}
 	ui.OK("release %s on %s: %d unchanged, %d to change, %d to create (of %d rendered objects)", version, env, n["unchanged"], n["change"], n["create"], len(objs))
-	ui.Note("not rendered yet: the IAM and console Deployments, and the generated IAM configuration, IAM schema, database list and secrets fingerprint ConfigMaps")
+	ui.Note("not rendered yet: the console Deployment, the IAM schema ConfigMap (shipped inside the IAM image) and the secrets fingerprint (needs secret values)")
 	for _, s := range skipped {
 		ui.Sub("not rendered yet: %s", s)
 	}
 	return nil
+}
+
+// liveIAMInputs reads the IAM Deployment's runtime inputs from the cluster:
+// the first administrator's subject (from the live Deployment) and the IAM
+// configuration's hash (from the live ConfigMap).
+func liveIAMInputs(ctx, ns string, desc *official.Descriptor) (subject, hash string) {
+	for _, a := range desc.App {
+		if a.Kind != "iam" {
+			continue
+		}
+		la := `jsonpath={.metadata.annotations.kubectl\.kubernetes\.io/last-applied-configuration}`
+		if out, err := sh.Output("kubectl", "--context", ctx, "-n", ns, "get", "deployment", official.K8sName(a.Name), "-o", la); err == nil && out != "" {
+			var d official.Object
+			if json.Unmarshal([]byte(out), &d) == nil {
+				t, _ := d["spec"].(map[string]any)["template"].(map[string]any)
+				if md, ok := t["metadata"].(map[string]any); ok {
+					if an, ok := md["annotations"].(map[string]any); ok {
+						subject, _ = an["mycel.dev/first-admin-subject"].(string)
+					}
+				}
+			}
+		}
+		if out, err := sh.Output("kubectl", "--context", ctx, "-n", ns, "get", "configmap", "mycel-iam-configuration", "-o",
+			`jsonpath={.metadata.annotations.mycel\.dev/iam-configuration}`); err == nil {
+			hash = out
+		}
+	}
+	return subject, hash
 }
