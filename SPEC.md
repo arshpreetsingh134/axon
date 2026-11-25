@@ -967,7 +967,17 @@ unrendered `<name>` Deployment once its rendered `<name>-worker` is ready.
 The reference tool's laptop deploy runs these clusters' pinned images; it cannot run a change before
 the pipeline has built and pinned it. `up --build` closes that gap without a second build recipe:
 
-- `[[local_build]]` in `axon.toml` (never in the descriptor) maps members to the pipeline's
+- Recipes are derived from the cluster's own build workflows (`.github/workflows/*.yml`, except the
+  generated `mycel-*` ones): for each `docker/build-push-action` step whose `tags` name a member's image
+  repository, its `file`, `context`, `target` (built with `--target`), `build-contexts` and
+  `build-args`, with each matrix row expanded and the expressions `matrix.<key>`, `'literal'`, `a == b`
+  and `cond && 'x' || 'y'` evaluated (anything else is empty). Every `actions/checkout` path is
+  replaced by the local checkout whose `origin` is that repository (searched under the workspace); the
+  cluster's own checkout is the cluster directory. Watch paths are the Dockerfile's folder and what it
+  copies from named contexts (`COPY --from=<context> <src>`, build args expanded). A member whose
+  checkout or Dockerfile is not found locally keeps its pin (`--debug` says why).
+- `[[local_build]]` in `axon.toml` (never in the descriptor) overrides the derived recipe, member by
+  member. It maps members to the pipeline's
   Dockerfile, context, named contexts (`--build-context`) and build args, with per-member args. Values
   may use `{workspace}`, `{cluster}`, `{target}`, `{token}` (the member's first `[[compose]]` token),
   `{checkout}` (`[[materialization]] local_checkout_path`), `{source_path}`, `{source}` and `{commit}`
@@ -978,7 +988,35 @@ the pipeline has built and pinned it. `up --build` closes that gap without a sec
   ancestor of HEAD, or when `git status` shows changes under its source path or a `watch` directory.
   An empty diff means the checkout is at its pin whatever its history. A checkout whose content differs
   but is behind or beside its pin, or without the pin's commit, keeps the pin and is reported. A member no recipe covers keeps its pin.
+- A member whose build fails keeps its pin and is reported; the deploy goes on.
 - Each image is built natively with `docker build` and tagged `local/<k8s name>:<12 hex of its image
   ID>`. The render replaces only those members' images; pull policy stays `IfNotPresent`, so the
   kubelet uses the local store. A rebuild that changes nothing keeps its tag and rolls nothing.
 - `--dry-run` reports what would be built and renders with the pins.
+
+### C.13 Workflow client identity in the dev profile (axon extension)
+
+Under app core 0.2 a workflow worker calls apps as a service principal (`private_key_jwt`). A project
+member declares one through its environment (descriptor `[app.env]` with the environment's
+overrides): `WFC_SERVICE_CLIENT_ID` (principal), `WFC_SERVICE_KEY_FILE` (where it reads its key),
+`WFC_SERVICE_AUDIENCES` (JSON, origin → application ID: the sites it calls), optionally
+`WFC_IAM_ISSUER` and `WFC_SERVICE_CLIENT_PER_AUDIENCE`. In the dev profile the deploy:
+
+1. Keeps a Secret `<k8s name>-service-key` per member: data key `key.pem`, and with
+   `WFC_SERVICE_CLIENT_PER_AUDIENCE=1` one `<suffix>.pem` per site (`<suffix>` = the site's last
+   dot-separated segment). Missing keys are new P-256 keys; existing ones are kept.
+2. Mounts it read-only into the rendered worker at the key file's folder (`key.pem` under the key
+   file's name, the others under their own; mode 0440, pod `fsGroup` 65532).
+3. Renders the IAM catalogs from each member image's `io.mycel.module.access` label (strict JSON;
+   catalog version `"r"` + sha256 of the compact roles JSON, first 12 hex), and restarts the IAM when
+   its configuration ConfigMap is applied.
+4. Signs in to the cluster IAM's admin API as `[fabric.console] push_actor` and, idempotently, per
+   principal: creates the service account (owner: that actor) or makes the environment's key its only
+   key (add, then revoke the others); grants, on each of its sites, the catalog roles that carry
+   `workflow.call`; then asks the token endpoint for a token per site. Principals are `<client>` on
+   every site, or with `WFC_SERVICE_CLIENT_PER_AUDIENCE=1` `<client>--<suffix>` on its site only.
+
+Observed in Mycel IAM 0.2.0-rc.28, and why the per-site form exists: a service principal granted on
+more than one site gets tokens, but the target host's session check refuses them
+(`session_ended_by_iam`); IDs are letters, digits, `.`, `_`, `-`, at most 64 characters; a public
+key once registered on one principal is refused (`invalid_client`) on another, even after revocation.

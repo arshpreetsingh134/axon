@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -51,8 +52,13 @@ type RenderInput struct {
 	IAMFirstAdminSubject string
 	IAMConfigHash        string
 	Desc                 *Descriptor
-	Titles               map[string]string   // member → materialization [app] title
-	Tokens               map[string][]string // member → materialization [[compose]] tokens
+	// Catalogs are access catalogs read from the members' images (label io.mycel.module.access, dev profile); a member
+	// without one keeps the observed default (catalogFor).
+	Catalogs map[string]Catalog
+	// ServiceKeys mounts a project member's service-principal private key (dev profile, SPEC.md Appendix C.13).
+	ServiceKeys map[string]ServiceKey
+	Titles      map[string]string   // member → materialization [app] title
+	Tokens      map[string][]string // member → materialization [[compose]] tokens
 }
 
 // PG is the managed Postgres an official environment uses.
@@ -169,6 +175,9 @@ func (l *Layout) MemberMeta() (titles map[string]string, tokens map[string][]str
 }
 
 // url is a front-door URL: scheme://<host>.<domain>[:port].
+// URL is the front-door URL of a host ("iam" → http://iam.localhost:8095 on a dev profile).
+func (in *RenderInput) URL(host string) string { return in.url(host) }
+
 func (in *RenderInput) url(host string) string {
 	u := or(in.Scheme, "https") + "://" + host + "." + in.Domain
 	if in.FrontPort != 0 {
@@ -646,6 +655,20 @@ func RenderWorkers(in *RenderInput) (objs []Object, skipped []string) {
 		if a.Port != 0 {
 			container["ports"] = []any{map[string]any{"containerPort": a.Port}}
 		}
+		pod := workerPod(in, N, container)
+		if k, ok := in.ServiceKeys[a.Name]; ok && k.Secret != "" && k.Path != "" {
+			dir, file := path.Split(k.Path)
+			items := []any{map[string]any{"key": "key.pem", "path": file}}
+			for _, x := range k.Extra {
+				if x != file {
+					items = append(items, map[string]any{"key": x, "path": x})
+				}
+			}
+			container["volumeMounts"] = []any{map[string]any{"mountPath": strings.TrimRight(dir, "/"), "name": "service-key", "readOnly": true}}
+			pod["volumes"] = []any{map[string]any{"name": "service-key", "secret": map[string]any{"secretName": k.Secret, "defaultMode": 0o440,
+				"items": items}}}
+			pod["securityContext"] = map[string]any{"fsGroup": 65532}
+		}
 		objs = append(objs,
 			Object{"apiVersion": "v1", "kind": "ServiceAccount", "automountServiceAccountToken": false, "metadata": meta(N)},
 			Object{"apiVersion": "apps/v1", "kind": "Deployment",
@@ -653,7 +676,7 @@ func RenderWorkers(in *RenderInput) (objs []Object, skipped []string) {
 				"spec": map[string]any{"replicas": 1, "revisionHistoryLimit": 3,
 					"selector": map[string]any{"matchLabels": map[string]any{"app": N}},
 					"template": map[string]any{"metadata": map[string]any{"labels": map[string]any{"app": N}},
-						"spec": workerPod(in, N, container)}}})
+						"spec": pod}}})
 		if a.Port != 0 {
 			objs = append(objs, Object{"apiVersion": "v1", "kind": "Service", "metadata": meta(N),
 				"spec": map[string]any{"ports": []any{map[string]any{"port": a.Port, "targetPort": a.Port}}, "selector": map[string]any{"app": N}}})
@@ -746,6 +769,14 @@ func (l *Layout) PinnedImages() map[string]string {
 		}
 	}
 	return out
+}
+
+// ServiceKey is a Secret holding a worker's private key (data key "key.pem") and the file path the worker reads it at.
+// Extra names further data keys of the Secret (one key per service principal) mounted beside it under their own names.
+type ServiceKey struct {
+	Secret string
+	Path   string
+	Extra  []string
 }
 
 func workerPod(in *RenderInput, N string, container map[string]any) map[string]any {

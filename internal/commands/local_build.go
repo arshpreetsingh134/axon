@@ -18,6 +18,7 @@ type localBuild struct {
 	Target     string
 	Why        string
 	Dockerfile string
+	Stage      string // docker build --target
 	Context    string
 	Contexts   map[string]string
 	Args       map[string]string
@@ -173,6 +174,10 @@ func planLocalBuilds(recipes []descriptor.LocalBuild, mats []official.Materializ
 		for k, v := range r.TargetArgs[t] {
 			b.Args[k] = expand(v, vars)
 		}
+		b.Stage = expand(r.Target, vars)
+		if st, ok := r.TargetStages[t]; ok {
+			b.Stage = expand(st, vars)
+		}
 		out = append(out, b)
 	}
 	return out, notes, nil
@@ -182,11 +187,20 @@ func planLocalBuilds(recipes []descriptor.LocalBuild, mats []official.Materializ
 // local/<name>:<12 hex of its image ID>, so an unchanged build keeps its tag (nothing rolls) and a changed one rolls.
 func buildLocal(builds []localBuild, noCache bool) (map[string]string, error) {
 	images := map[string]string{}
+	var failed []string
+	defer func() {
+		if len(failed) > 0 {
+			ui.Warn("%d member(s) did not build and run their pinned images: %s", len(failed), strings.Join(failed, ", "))
+		}
+	}()
 	for _, b := range builds {
 		repo := "local/" + official.K8sName(b.Target)
 		args := []string{"build", "-f", b.Dockerfile, "-t", repo + ":build"}
 		if noCache {
 			args = append(args, "--no-cache")
+		}
+		if b.Stage != "" {
+			args = append(args, "--target", b.Stage)
 		}
 		for _, k := range sortedKeys(b.Contexts) {
 			args = append(args, "--build-context", k+"="+b.Contexts[k])
@@ -197,7 +211,10 @@ func buildLocal(builds []localBuild, noCache bool) (map[string]string, error) {
 		args = append(args, b.Context)
 		ui.Step("building %s (%s)", b.Target, b.Why)
 		if _, err := sh.Run(sh.Cmd{Name: "docker", Args: args, Env: []string{"DOCKER_BUILDKIT=1"}, Stream: true, Prefix: "  │ ", Timeout: 45 * time.Minute}); err != nil {
-			return nil, fmt.Errorf("build %s: %w", b.Target, err)
+			// one member that does not build keeps its pinned image; the others still deploy
+			ui.Warn("%s did not build, so it keeps its pinned image: %v", b.Target, err)
+			failed = append(failed, b.Target)
+			continue
 		}
 		id, err := sh.Output("docker", "image", "inspect", "--format", "{{.Id}}", repo+":build")
 		if err != nil {

@@ -58,13 +58,15 @@ type Overlay struct {
 // {token} (its first module token), {checkout} (its local checkout), {source_path}, {source} ({checkout}/{source_path})
 // and {commit} (the checkout's HEAD).
 type LocalBuild struct {
-	Targets    []string                     `toml:"targets"`     // image-backed members (materialization targets)
-	Dockerfile string                       `toml:"dockerfile"`  // the pipeline's Dockerfile
-	Context    string                       `toml:"context"`     // build context directory
-	Contexts   map[string]string            `toml:"contexts"`    // named build contexts (--build-context name=dir)
-	Args       map[string]string            `toml:"args"`        // build args for every target
-	TargetArgs map[string]map[string]string `toml:"target_args"` // build args for one target (win over args)
-	Watch      []string                     `toml:"watch"`       // more directories whose uncommitted changes call for a rebuild
+	Targets      []string                     `toml:"targets"`       // image-backed members (materialization targets)
+	Dockerfile   string                       `toml:"dockerfile"`    // the pipeline's Dockerfile
+	Target       string                       `toml:"target"`        // build stage (docker build --target); may use placeholders
+	TargetStages map[string]string            `toml:"target_stages"` // build stage for one member (wins over target)
+	Context      string                       `toml:"context"`       // build context directory
+	Contexts     map[string]string            `toml:"contexts"`      // named build contexts (--build-context name=dir)
+	Args         map[string]string            `toml:"args"`          // build args for every target
+	TargetArgs   map[string]map[string]string `toml:"target_args"`   // build args for one target (win over args)
+	Watch        []string                     `toml:"watch"`         // more directories whose uncommitted changes call for a rebuild
 }
 
 // OverlayName is the overlay file name inside the infra dir.
