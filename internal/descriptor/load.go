@@ -47,6 +47,24 @@ type Overlay struct {
 	Deploy  DeployDefaults    `toml:"deploy"`
 	CI      CIConfig          `toml:"ci"`
 	Release ReleaseConfig     `toml:"release"`
+	// LocalBuild are the recipes `up --build` uses to build image-backed members from local checkouts.
+	LocalBuild []LocalBuild `toml:"local_build"`
+}
+
+// LocalBuild is one [[local_build]] recipe of the overlay: how the pipeline builds the images of some image-backed
+// members, so the dev environment of a pipeline-released cluster can build them from the developer's checkouts with
+// the same Dockerfile (`up --build`). Paths are relative to the cluster directory unless absolute. Every string may
+// use the placeholders {workspace} (the workspace root), {cluster} (the cluster directory), {target} (the member),
+// {token} (its first module token), {checkout} (its local checkout), {source_path}, {source} ({checkout}/{source_path})
+// and {commit} (the checkout's HEAD).
+type LocalBuild struct {
+	Targets    []string                     `toml:"targets"`     // image-backed members (materialization targets)
+	Dockerfile string                       `toml:"dockerfile"`  // the pipeline's Dockerfile
+	Context    string                       `toml:"context"`     // build context directory
+	Contexts   map[string]string            `toml:"contexts"`    // named build contexts (--build-context name=dir)
+	Args       map[string]string            `toml:"args"`        // build args for every target
+	TargetArgs map[string]map[string]string `toml:"target_args"` // build args for one target (win over args)
+	Watch      []string                     `toml:"watch"`       // more directories whose uncommitted changes call for a rebuild
 }
 
 // OverlayName is the overlay file name inside the infra dir.
