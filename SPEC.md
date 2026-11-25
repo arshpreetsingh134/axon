@@ -973,10 +973,11 @@ the pipeline has built and pinned it. `up --build` closes that gap without a sec
   `{checkout}` (`[[materialization]] local_checkout_path`), `{source_path}`, `{source}` and `{commit}`
   (the checkout's HEAD). Relative paths resolve against the cluster directory.
 - Selection: `--app` names members (built regardless of drift); `--rebuild` takes every member a
-  recipe covers and passes `--no-cache`. Otherwise a member is built when the source lock's commit for
-  its `source_member` is an ancestor of the checkout's HEAD and differs from it, or when `git status`
-  shows changes under its source path or a `watch` directory. A checkout behind or beside its pin, or
-  without the pin's commit, keeps the pin and is reported. A member no recipe covers keeps its pin.
+  recipe covers and passes `--no-cache`. Otherwise a member is built when `git diff <pin> HEAD --
+  <source path>` is not empty and the pin (the source lock's commit for its `source_member`) is an
+  ancestor of HEAD, or when `git status` shows changes under its source path or a `watch` directory.
+  An empty diff means the checkout is at its pin whatever its history. A checkout whose content differs
+  but is behind or beside its pin, or without the pin's commit, keeps the pin and is reported. A member no recipe covers keeps its pin.
 - Each image is built natively with `docker build` and tagged `local/<k8s name>:<12 hex of its image
   ID>`. The render replaces only those members' images; pull policy stays `IfNotPresent`, so the
   kubelet uses the local store. A rebuild that changes nothing keeps its tag and rolls nothing.
