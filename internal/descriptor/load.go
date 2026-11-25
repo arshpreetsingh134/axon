@@ -49,6 +49,9 @@ type Overlay struct {
 	Release ReleaseConfig     `toml:"release"`
 	// LocalBuild are the recipes `up --build` uses to build image-backed members from local checkouts.
 	LocalBuild []LocalBuild `toml:"local_build"`
+	// ServiceRoles names, per service principal, the catalog roles the dev deploy grants it on its target site when
+	// the catalog alone cannot tell (SPEC.md Appendix C.14).
+	ServiceRoles map[string][]string `toml:"service_roles"`
 }
 
 // LocalBuild is one [[local_build]] recipe of the overlay: how the pipeline builds the images of some image-backed

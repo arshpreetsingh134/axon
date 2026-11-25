@@ -112,6 +112,13 @@ func runPipelineDevDeploy(c *cli.Ctx, m *descriptor.Model, l *official.Layout, e
 	if _, err := ensureKeySecrets(ids, ctx, e.Namespace, dry); err != nil {
 		return err
 	}
+	clients, clientNotes := serviceClients(desc, overrides)
+	for _, n := range clientNotes {
+		ui.Sub("%s", n)
+	}
+	if err := ensureClientKeys(clients, ctx, e.Namespace, dry); err != nil {
+		return err
+	}
 	keys := map[string]official.ServiceKey{}
 	for _, id := range ids {
 		keys[id.Member] = official.ServiceKey{Secret: id.Secret, Path: id.KeyFile, Extra: id.extraKeys()}
@@ -229,13 +236,16 @@ func runPipelineDevDeploy(c *cli.Ctx, m *descriptor.Model, l *official.Layout, e
 		}
 	}
 
-	if len(ids) > 0 {
+	if len(ids) > 0 || len(clients) > 0 {
 		actor, password := "", ""
 		if con := m.C.Fabric.Console; con != nil {
 			actor, password = con.PushActor, con.PushPassword
 		}
 		if err := provisionIdentities(ids, r.iamOrigin, actor, password, ctx, e.Namespace); err != nil {
 			return fmt.Errorf("workflow clients: %w", err)
+		}
+		if err := provisionClients(clients, m.Overlay.ServiceRoles, r.iamOrigin, r.iamOrigin, actor, password, ctx, e.Namespace); err != nil {
+			return fmt.Errorf("service clients: %w", err)
 		}
 	}
 
