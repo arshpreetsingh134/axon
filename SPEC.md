@@ -934,3 +934,30 @@ encoded with two-space indentation, no HTML escaping, and a trailing newline.
 
 The ConfigMap's `mycel.dev/iam-configuration` annotation, which the IAM Deployment repeats, is a
 16-hex-digit content hash whose input is not yet reproduced.
+
+### C.11 The dev profile (a developer's namespace)
+
+A pipeline-released cluster whose members are image-backed also has a `dev` environment, deployed
+by `axon up` from the same pins. It renders with the official rules, with these differences
+(observed against a namespace deployed by the reference tool):
+
+- The release is `local`. Images are the members' pins and each worker's Dockerfile `FROM` pin.
+  Platform images, which the repository doesn't pin, are read from the live Deployments.
+- URLs use `http://<host>.<domain>:<front door port>` (the `[fabric.traefik] http` port) instead of
+  `https://<host>.<domain>`.
+- Postgres is the local container, reached at `host.docker.internal:<[fabric.postgres] port>` as
+  the cluster's database user. The URL is `postgres://<user>:$(POSTGRES_PASSWORD)@…/<db>?sslmode=disable`,
+  with `POSTGRES_PASSWORD` from the `postgres-credentials` secret.
+- Deployments carry `mycel.build/image-id`, the image digest. There are no image pull secrets.
+  The kubelet uses the local image store, so the deploy pulls missing images with the developer's
+  own registry login.
+- Ingresses use the `web` entrypoint only. Host aliases point at the `traefik` Service.
+- No fabric, databases, NetworkPolicies or singletons are rendered: the local bring-up owns them.
+- `environments/dev.overrides.toml` `[app_env.<app>]` values are applied last, for apps and workers.
+- A member without its proof-key secret, which the reference tool's deploy creates, is left as it
+  is, along with the members of its project. The IAM configuration still declares their teams, and
+  the console keeps their live topology.
+
+The deploy applies only created or changed objects (client-side apply, so the last-applied
+annotation stays the plan's oracle), waits for each rolled-out Deployment, and scales to 0 an
+unrendered `<name>` Deployment once its rendered `<name>-worker` is ready.

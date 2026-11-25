@@ -574,7 +574,7 @@ something you didn't expect.
 
 ### Before you start
 
-- axon 0.5.1 or later (`axon version`).
+- axon 0.6.0 or later (`axon version`).
 - A GitHub token for the cluster repository: `gh auth login`, or `GITHUB_TOKEN`.
 - For `env plan`: a kube context for the cluster that uses **your own identity**. On AKS:
   `az login`, then `az aks get-credentials ... --context <name> --format exec` and
@@ -632,6 +632,34 @@ A few values that come from secrets or the identity provider are read from the c
 door's internal IP, applications' public keys, the platform catalogs' versions, and the first
 administrator. Two objects are not rendered: the IAM schema, which ships inside the IAM image, and the
 secrets fingerprint, which needs secret values.
+
+### Your own dev environment
+
+On a pipeline-released cluster whose members are image-backed (each member runs a pinned image),
+the `dev` environment is deployed the same way, from the same pins, so your namespace runs what the
+pipeline would run:
+
+```bash
+axon env plan dev                 # what would change (the kube context comes from [deploy].context)
+axon up --dry-run                 # the API server checks every object; nothing changes
+axon up                           # deploy
+```
+
+`axon up` (or `axon env deploy dev`) renders the objects with the dev profile and applies only the
+ones the plan creates or changes, keeping each object's last-applied configuration. Before applying,
+it pulls any image your local image store lacks, using your own `docker login`, because a dev cluster
+has no image pull secret. It then waits for every rolled-out Deployment and runs the cluster's
+`post_deploy` hooks. Nothing is built, so `--build` and `--module` don't apply: bump a pin and
+redeploy.
+
+The dev profile (SPEC.md Appendix C.11) serves plain HTTP on the front door's port, uses the local
+Postgres container, and applies `environments/dev.overrides.toml` last, to workers too. A member that
+the reference tool's own deploy must set up first, such as one without a proof-key secret yet, is left
+as it is, and the plan says so.
+
+When a newly rendered `<name>-worker` replaces an older `<name>` Deployment that the renderer no longer
+renders, both would poll the same task queue. Once the new worker is ready, `axon up` scales the old
+one to 0 and keeps its Deployment. `--keep-superseded` leaves it running.
 
 ---
 

@@ -278,25 +278,37 @@ func lineDiff(a, b string) string {
 
 // runHooks executes a lifecycle stage's commands in the controller dir.
 func (s *Session) runHooks(stage string) error {
-	cmds := s.M.C.Hooks.Stage(stage)
-	if len(cmds) == 0 || s.O.NoHooks {
+	if s.O.NoHooks {
+		return nil
+	}
+	return RunStage(s.M, HookVars{Env: s.Env.Name, Target: s.Target, Namespace: s.Namespace, KubeContext: s.KubeContext}, stage, s.DryRun)
+}
+
+// HookVars are the session values a hook sees as AXON_* variables.
+type HookVars struct{ Env, Target, Namespace, KubeContext string }
+
+// RunStage runs the cluster's hook commands of one lifecycle stage in the
+// controller dir (dry: only list them).
+func RunStage(m *descriptor.Model, v HookVars, stage string, dry bool) error {
+	cmds := m.C.Hooks.Stage(stage)
+	if len(cmds) == 0 {
 		return nil
 	}
 	env := []string{
-		"AXON_CLUSTER=" + s.M.C.Name, "AXON_ENV=" + s.Env.Name, "AXON_TARGET=" + s.Target,
-		"AXON_NAMESPACE=" + s.Namespace, "AXON_DOMAIN=" + s.M.C.DomainOrDefault(),
-		fmt.Sprintf("AXON_HTTP_PORT=%d", s.M.C.HTTPPort()), "AXON_CONTROLLER_DIR=" + s.M.Dir,
-		"AXON_ROOT=" + s.M.Root, "AXON_INFRA_DIR=" + s.M.Infra, "AXON_KUBE_CONTEXT=" + s.KubeContext,
+		"AXON_CLUSTER=" + m.C.Name, "AXON_ENV=" + v.Env, "AXON_TARGET=" + v.Target,
+		"AXON_NAMESPACE=" + v.Namespace, "AXON_DOMAIN=" + m.C.DomainOrDefault(),
+		fmt.Sprintf("AXON_HTTP_PORT=%d", m.C.HTTPPort()), "AXON_CONTROLLER_DIR=" + m.Dir,
+		"AXON_ROOT=" + m.Root, "AXON_INFRA_DIR=" + m.Infra, "AXON_KUBE_CONTEXT=" + v.KubeContext,
 		"AXON_STAGE=" + stage,
 	}
 	for _, c := range cmds {
-		if s.DryRun {
+		if dry {
 			ui.Sub("would run %s hook: %s", stage, c)
 			continue
 		}
 		ui.Step("hook %s: %s", stage, c)
 		start := time.Now()
-		if _, err := sh.Run(sh.Cmd{Name: "sh", Args: []string{"-c", c}, Dir: s.M.Dir, Env: env, Stream: true, Prefix: "  │ "}); err != nil {
+		if _, err := sh.Run(sh.Cmd{Name: "sh", Args: []string{"-c", c}, Dir: m.Dir, Env: env, Stream: true, Prefix: "  │ "}); err != nil {
 			return fmt.Errorf("%s hook %q: %w", stage, c, err)
 		}
 		ui.Debug("hook took %s", time.Since(start).Round(time.Second))

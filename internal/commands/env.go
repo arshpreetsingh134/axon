@@ -33,6 +33,7 @@ var deployFlags = []cli.Flag{
 	{Name: "timeout", Kind: cli.String, Value: "<duration>", Usage: "per-step health/rollout timeout, e.g. 15m", Default: "10m"},
 	{Name: "keep-on-failure", Kind: cli.Bool, Usage: "leave failed workloads in place instead of rolling them back"},
 	{Name: "no-hooks", Kind: cli.Bool, Usage: "skip lifecycle hooks"},
+	{Name: "keep-superseded", Kind: cli.Bool, Usage: "dev of a pipeline-released cluster: leave an old-layout worker running when the deploy creates its replacement"},
 	flagDryRun, flagForce,
 	{Name: "verbose", Kind: cli.Bool, Hidden: true},
 }
@@ -212,6 +213,14 @@ func deployLike(c *cli.Ctx, verb, env string, plan bool) error {
 	m, err := loadCluster(c, dir)
 	if err != nil {
 		return err
+	}
+	if !plan && (verb == "up" || c.Arg(1) == "") { // a release argument keeps the release path
+		name := or(or(env, m.C.Deploy.Env), "dev")
+		if e, err := envcfg.Load(m.Dir, m.C.Name, name); err == nil {
+			if l := pipelineDev(m, e); l != nil { // a developer's namespace of a pipeline-released cluster
+				return runPipelineDevDeploy(c, m, l, e)
+			}
+		}
 	}
 	o, err := deployOptions(c, verb, env)
 	if err != nil {
@@ -939,6 +948,9 @@ func runEnvPlan(c *cli.Ctx) error {
 	if m, err := controller(c); err == nil {
 		if e, err := envcfg.Load(m.Dir, m.C.Name, c.Arg(0)); err == nil {
 			if l := officialEnv(m, e); l != nil {
+				return runOfficialPlan(c, m, l, e, c.Arg(0))
+			}
+			if l := pipelineDev(m, e); l != nil { // a developer's namespace of a pipeline-released cluster
 				return runOfficialPlan(c, m, l, e, c.Arg(0))
 			}
 		}
