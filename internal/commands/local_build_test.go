@@ -2,6 +2,9 @@ package commands
 
 import (
 	"errors"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -31,7 +34,7 @@ func (f fakeGit) same(dir, a, b, path string) (bool, bool) {
 	}
 	return true, f.sameAt[a+"="+b+"|"+path]
 }
-func (f fakeGit) contains(dir, ancestor, commit string) (bool, bool) {
+func (f fakeGit) contains(dir, ancestor, commit, _ string) (bool, bool) {
 	if f.unknown[ancestor] {
 		return false, false
 	}
@@ -165,5 +168,59 @@ func TestLocalBuildsComparesContentNotHistory(t *testing.T) {
 	bs, _, _ = planLocalBuilds(r, m, l, tk, "/w", "/w/cluster", nil, false, g)
 	if targets(bs) != "p.app.quote,p.app.rating" {
 		t.Fatalf("dirty: %s", targets(bs))
+	}
+}
+
+func TestLocalImagesByMemberNamesMembersFromTheTag(t *testing.T) {
+	got := localImagesByMember(map[string]string{
+		"app-shop-wfc-worker": "local/app-shop-wfc-worker:abc123",
+		"app-shop-billing":    "local/app-shop-billing:def456",
+		"app-unknown":         "local/app-unknown:1",
+	}, []string{"shop.wfc.worker", "shop.billing"})
+	if len(got) != 2 || got["shop.wfc.worker"] != "local/app-shop-wfc-worker:abc123" || got["shop.billing"] != "local/app-shop-billing:def456" {
+		t.Fatalf("got %v", got)
+	}
+}
+
+func TestRealGitContainsMainsMergeOfDevelop(t *testing.T) {
+	dir := t.TempDir()
+	run := func(args ...string) string {
+		t.Helper()
+		cmd := exec.Command("git", append([]string{"-C", dir, "-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false"}, args...)...)
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+		return strings.TrimSpace(string(out))
+	}
+	write := func(name, body string) {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	run("init", "-q", "-b", "main")
+	write("a.txt", "1")
+	run("add", ".")
+	run("commit", "-qm", "base")
+	run("checkout", "-qb", "develop")
+	write("a.txt", "2")
+	run("commit", "-qam", "feature")
+	run("checkout", "-q", "main")
+	run("merge", "-q", "--no-ff", "-m", "merge develop", "develop")
+	pin := run("rev-parse", "HEAD")
+	run("checkout", "-q", "develop")
+	write("a.txt", "3")
+	run("commit", "-qam", "more work")
+	head := run("rev-parse", "HEAD")
+	if known, ok := (realGit{}).contains(dir, pin, head, "."); !known || !ok {
+		t.Fatalf("develop beside main's merge of it: known %v ok %v", known, ok)
+	}
+	run("checkout", "-q", "main")
+	write("b.txt", "hotfix")
+	run("add", ".")
+	run("commit", "-qm", "hotfix on main")
+	hot := run("rev-parse", "HEAD")
+	if _, ok := (realGit{}).contains(dir, hot, head, "."); ok {
+		t.Fatal("a hotfix only on main must not count as contained")
 	}
 }
