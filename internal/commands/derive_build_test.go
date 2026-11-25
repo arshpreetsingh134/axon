@@ -16,6 +16,8 @@ func TestEvalGHExpressions(t *testing.T) {
 		"${{ matrix.workflow_worker == '1' && 'workflow-worker' || 'standard' }}": "workflow-worker",
 		"${{ matrix.missing == '1' && 'workflow-worker' || 'standard' }}":         "standard",
 		"TOKEN=${{ matrix.token }}\nSECRET=${{ secrets.X }}":                      "TOKEN=quote\nSECRET=",
+		"ACCESS_CATALOG=${{ matrix.token || 'default' }}":                         "ACCESS_CATALOG=quote",
+		"ACCESS_CATALOG=${{ matrix.missing || 'default' }}":                       "ACCESS_CATALOG=default",
 	}
 	for in, want := range cases {
 		if got := evalGH(in, m); got != want {

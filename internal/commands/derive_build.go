@@ -194,8 +194,8 @@ func matrixRows(m map[string]any) []map[string]string {
 
 var ghExpr = regexp.MustCompile(`\$\{\{\s*(.*?)\s*\}\}`)
 
-// evalGH evaluates the expressions build workflows use: matrix.<key>, a 'literal', a == b, and the
-// "cond && 'x' || 'y'" choice. Anything else (github.*, secrets.*) becomes "".
+// evalGH evaluates the expressions build workflows use: matrix.<key>, a 'literal', a == b, the
+// "cond && 'x' || 'y'" choice and the "a || 'default'" fallback. Anything else (github.*, secrets.*) becomes "".
 func evalGH(s string, matrix map[string]string) string {
 	return ghExpr.ReplaceAllStringFunc(s, func(m string) string {
 		return evalGHExpr(ghExpr.FindStringSubmatch(m)[1], matrix)
@@ -210,6 +210,12 @@ func evalGHExpr(e string, matrix map[string]string) string {
 			return evalGHExpr(yes, matrix)
 		}
 		return evalGHExpr(no, matrix)
+	}
+	if a, b, ok := strings.Cut(e, "||"); ok { // the first truthy operand (empty and "false" are falsy)
+		if v := evalGHExpr(a, matrix); v != "" && v != "false" {
+			return v
+		}
+		return evalGHExpr(b, matrix)
 	}
 	if a, b, ok := strings.Cut(e, "=="); ok {
 		if evalGHExpr(a, matrix) == evalGHExpr(b, matrix) {
