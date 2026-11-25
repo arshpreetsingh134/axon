@@ -15,6 +15,10 @@ import (
 //     files, Dockerfiles, workflows);
 //   - a workflow that builds a locked source builds it at the locked commit.
 //
+// Severities follow the release pipeline (SPEC.md C.6): a disagreement among the pins a release deploys (member
+// files, Dockerfiles) blocks; one that only a workflow carries (the business smoke test) and a build revision outside
+// the lock are risks, because the pipeline releases over them (observed: 0.1.25 released with both).
+//
 // Release records are history and are not compared. Findings are sorted.
 func CheckPins(l *Layout) ([]check.Finding, error) {
 	var fs []check.Finding
@@ -47,11 +51,15 @@ func CheckPins(l *Layout) ([]check.Finding, error) {
 		return nil, err
 	}
 	byImage := map[string]map[string][]string{} // image → digest → places
+	deployed := map[string]map[string]bool{}    // image → digests pinned outside workflows
 	for _, p := range pins {
 		if byImage[p.Image] == nil {
-			byImage[p.Image] = map[string][]string{}
+			byImage[p.Image], deployed[p.Image] = map[string][]string{}, map[string]bool{}
 		}
 		byImage[p.Image][p.Digest] = append(byImage[p.Image][p.Digest], fmt.Sprintf("%s:%d", p.File, p.Line))
+		if !isWorkflowFile(p.File) {
+			deployed[p.Image][p.Digest] = true
+		}
 	}
 	for img, digests := range byImage {
 		if len(digests) < 2 {
@@ -62,6 +70,11 @@ func CheckPins(l *Layout) ([]check.Finding, error) {
 			parts = append(parts, fmt.Sprintf("%s in %s", ShortDigest(d), strings.Join(places, ", ")))
 		}
 		sort.Strings(parts)
+		if len(deployed[img]) <= 1 {
+			add("DIGEST_DISAGREES", "risk", img, fmt.Sprintf("a workflow pins another digest than the release deploys (%s): it tests a different image",
+				strings.Join(parts, "; ")), "pin every place to the same build's digest")
+			continue
+		}
 		add("DIGEST_DISAGREES", "blocking", img, fmt.Sprintf("pinned to %d different digests: %s", len(digests), strings.Join(parts, "; ")),
 			"pin every place to the same build's digest")
 	}
@@ -96,12 +109,17 @@ func CheckPins(l *Layout) ([]check.Finding, error) {
 			want = append(want, ShortCommit(c))
 		}
 		sort.Strings(want)
-		add("BUILD_REVISION_NOT_LOCKED", "blocking", s.Repo.Slug,
-			fmt.Sprintf("%s:%d builds %s, but the source lock pins %s", s.File, s.Line, ShortCommit(s.Commit), strings.Join(want, ", ")),
+		add("BUILD_REVISION_NOT_LOCKED", "risk", s.Repo.Slug,
+			fmt.Sprintf("%s:%d builds %s, but the source lock pins %s: its next build is not of the locked source", s.File, s.Line, ShortCommit(s.Commit), strings.Join(want, ", ")),
 			"move the build revision and the lock entry to the same commit")
 	}
 	check.Sort(fs)
 	return fs, nil
+}
+
+// isWorkflowFile reports whether a pin sits in a GitHub workflow (not deployed by a release).
+func isWorkflowFile(f string) bool {
+	return strings.Contains(f, ".github/workflows/")
 }
 
 // ShortDigest abbreviates "sha256:<64-hex>" to "sha256:<12-hex>".

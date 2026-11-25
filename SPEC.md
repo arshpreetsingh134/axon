@@ -868,6 +868,10 @@ for <K1>, <K2>, …; missing: <Kx>, …` (keys sorted, comma-separated).
   smoke workflow (`image: …@sha256:`), the worker's `FROM …@sha256:`, and the build workflow's
   `revision:` for the source commit. The release record's `[modules]` digests are the re-pushed
   copies (C.1), so they are not compared byte-for-byte with the pins.
+- Severity follows what the pipeline releases over (0.1.25 released with both of these): a
+  disagreement among the pins a release deploys (materialization files, Dockerfiles) is blocking; one
+  that only a workflow carries (the smoke test runs another build) is a risk, and so is a build
+  `revision:` outside the lock (the next build is not of the locked source).
 
 ### C.7 Concurrency
 
