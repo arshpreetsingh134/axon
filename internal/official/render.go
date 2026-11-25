@@ -28,6 +28,23 @@ type RenderInput struct {
 	TraefikIP    string            // ClusterIP of the traefik-internal Service (hostAliases); live
 	ClusterName  string            // the descriptor's name (the default first IAM administrator is admin@<name>.com)
 
+	// The developer profile (a dev environment of a pipeline-released cluster): plain HTTP on the
+	// front door's port, the local Docker Postgres, the image id on each pod template, and the
+	// environment's per-app overrides. Zero values are the official profile.
+	Scheme    string                       // "http" for dev; "" means https
+	FrontPort int                          // the front door's port in URLs (dev), 0 for none
+	PGDocker  bool                         // POSTGRES_PASSWORD + sslmode=disable instead of the managed server's form
+	ImageIDs  bool                         // annotate pod templates with mycel.build/image-id
+	AppEnv    map[string]map[string]string // environments/<env>.overrides.toml [app_env.<app>]
+	// Entrypoints are the Ingress entrypoints ("web" for dev); "" means "web,websecure".
+	Entrypoints string
+	// NoPullSecret drops the image pull secret from pods (a developer's nodes pull with their own credentials).
+	NoPullSecret bool
+	// Exclude lists members left as they are, with the reason.
+	Exclude map[string]string
+	// ConsoleModules keeps the live console topology's module list of members left as they are.
+	ConsoleModules map[string][]string
+
 	// The IAM Deployment's runtime inputs, read from the cluster: the first
 	// administrator's subject and the IAM configuration's hash. Without both
 	// the IAM Deployment is not rendered.
@@ -151,6 +168,15 @@ func (l *Layout) MemberMeta() (titles map[string]string, tokens map[string][]str
 	return titles, tokens, nil
 }
 
+// url is a front-door URL: scheme://<host>.<domain>[:port].
+func (in *RenderInput) url(host string) string {
+	u := or(in.Scheme, "https") + "://" + host + "." + in.Domain
+	if in.FrontPort != 0 {
+		u += fmt.Sprintf(":%d", in.FrontPort)
+	}
+	return u
+}
+
 // K8sName is a member's object name: "app-" + the name with dots as dashes.
 func K8sName(member string) string { return "app-" + strings.ReplaceAll(member, ".", "-") }
 
@@ -235,7 +261,7 @@ func RenderAppCore(in *RenderInput) (objs, shadow []Object, skipped []string) {
 	var list []appJSON
 	for _, a := range apps {
 		host, _, _, _, _ := in.Desc.appEntry(a.App)
-		list = append(list, appJSON{ID: a.App, Title: a.Title, Icon: a.Icon, URL: "https://" + host + "." + in.Domain})
+		list = append(list, appJSON{ID: a.App, Title: a.Title, Icon: a.Icon, URL: in.url(host)})
 	}
 	hostApps, _ := json.Marshal(map[string]any{"apps": list})
 	meta := func(name string) map[string]any {
@@ -245,6 +271,10 @@ func RenderAppCore(in *RenderInput) (objs, shadow []Object, skipped []string) {
 	for _, a := range apps {
 		name := a.App
 		host, db, kind, denv, ok := in.Desc.appEntry(name)
+		if why, ex := in.Exclude[name]; ex {
+			skipped = append(skipped, name+" (left as it is: "+why+")")
+			continue
+		}
 		image := in.Images[name]
 		if !ok || host == "" || image == "" {
 			skipped = append(skipped, fmt.Sprintf("%s (host %q, image %q)", name, host, image))
@@ -302,13 +332,13 @@ func RenderAppCore(in *RenderInput) (objs, shadow []Object, skipped []string) {
 			title = titleWords(name)
 		}
 		token := rawToken(in, name)
-		iam := "https://iam." + in.Domain
+		iam := in.url("iam")
 		head := []any{
 			envVal("PORT", "9080"),
 			envVal("MYCEL_HOST_CLIENT_ID", name),
 			envSecret("MYCEL_HOST_CLIENT_PROOF_KEY", "proof-key", "mycel-host-"+dashed, false),
 			envVal("MYCEL_HOST_IAM_URL", iam),
-			envVal("MYCEL_HOST_CALLBACK_URL", "https://"+host+"."+in.Domain+"/auth/callback"),
+			envVal("MYCEL_HOST_CALLBACK_URL", in.url(host)+"/auth/callback"),
 			envVal("MYCEL_HOST_OPERATOR_ROLES", "admin,operator,mycel_operator,platform"),
 			envVal("MYCEL_HOST_TITLE", title),
 			envVal("MYCEL_HOST_APPS", string(hostApps)),
@@ -316,7 +346,11 @@ func RenderAppCore(in *RenderInput) (objs, shadow []Object, skipped []string) {
 		}
 		platform := in.Titles[name] == "" && platformTokens[host] != ""
 		if db != "" {
-			head = append(head, envSecret("POSTGRES_PASSWORD_URI", "uri-password", "postgres-credentials", false))
+			if in.PGDocker {
+				head = append(head, envSecret("POSTGRES_PASSWORD", "password", "postgres-credentials", false))
+			} else {
+				head = append(head, envSecret("POSTGRES_PASSWORD_URI", "uri-password", "postgres-credentials", false))
+			}
 			if platform && host == "kpi" {
 				head = append(head,
 					envSecret("MYCEL_CLICKHOUSE_WRITER_PASSWORD", "password", "clickhouse-kpi-writer", false),
@@ -325,9 +359,13 @@ func RenderAppCore(in *RenderInput) (objs, shadow []Object, skipped []string) {
 					envVal("CLICKHOUSE_DSN", "clickhouse://kpi_writer:$(MYCEL_CLICKHOUSE_WRITER_PASSWORD)@clickhouse:9000/mycel_kpi?dial_timeout=5s"),
 					envVal("CLICKHOUSE_READ_DSN", "clickhouse://kpi_reader:$(MYCEL_CLICKHOUSE_READER_PASSWORD)@clickhouse:9000/mycel_kpi?dial_timeout=5s"))
 			}
-			head = append(head,
-				envVal("DATABASE_URL", fmt.Sprintf("postgres://%s:$(POSTGRES_PASSWORD_URI)@%s:%d/%s?sslmode=%s&sslrootcert=/etc/ssl/certs/ca-certificates.crt",
-					in.PG.User, in.PG.Host, in.PG.Port, db, or(in.PG.TLS, "verify-full"))))
+			if in.PGDocker {
+				head = append(head, envVal("DATABASE_URL", fmt.Sprintf("postgres://%s:$(POSTGRES_PASSWORD)@%s:%d/%s?sslmode=disable", in.PG.User, in.PG.Host, in.PG.Port, db)))
+			} else {
+				head = append(head,
+					envVal("DATABASE_URL", fmt.Sprintf("postgres://%s:$(POSTGRES_PASSWORD_URI)@%s:%d/%s?sslmode=%s&sslrootcert=/etc/ssl/certs/ca-certificates.crt",
+						in.PG.User, in.PG.Host, in.PG.Port, db, or(in.PG.TLS, "verify-full"))))
+			}
 		}
 		rest := map[string]any{
 			"MYCEL_ANONYMOUS_ROUTES":      envVal("MYCEL_ANONYMOUS_ROUTES", "/api/system"),
@@ -346,7 +384,11 @@ func RenderAppCore(in *RenderInput) (objs, shadow []Object, skipped []string) {
 				rest["TEMPORAL_NAMESPACE"] = envVal("TEMPORAL_NAMESPACE", "default")
 			}
 		}
+		merged := map[string]string{}
 		for k, v := range denv {
+			merged[k] = v
+		}
+		for k, v := range merged {
 			if m := exactRef.FindStringSubmatch(v); m != nil {
 				rest[k] = envSecret(k, m[1], "mycel-app-env", false)
 			} else {
@@ -375,7 +417,7 @@ func RenderAppCore(in *RenderInput) (objs, shadow []Object, skipped []string) {
 				}
 			}
 			if in.Desc.HasFabric("tracing") {
-				rest["MYCEL_CONSOLE_GRAFANA_URL"] = envVal("MYCEL_CONSOLE_GRAFANA_URL", "https://grafana."+in.Domain)
+				rest["MYCEL_CONSOLE_GRAFANA_URL"] = envVal("MYCEL_CONSOLE_GRAFANA_URL", in.url("grafana"))
 				if !contains(keys, "MYCEL_CONSOLE_GRAFANA_URL") {
 					keys = append(keys, "MYCEL_CONSOLE_GRAFANA_URL")
 				}
@@ -385,7 +427,7 @@ func RenderAppCore(in *RenderInput) (objs, shadow []Object, skipped []string) {
 		isIAM := kind == "iam"
 		if isIAM { // the IAM module runs in cluster mode from its mounted configuration
 			for k, v := range map[string]string{
-				"MYCEL_DEFAULT_RETURN_TO":       "https://" + host + "." + in.Domain + "/",
+				"MYCEL_DEFAULT_RETURN_TO":       in.url(host) + "/",
 				"MYCEL_IAM_APPLICATIONS_FILE":   "/etc/mycel/iam/applications.json",
 				"MYCEL_IAM_FIRST_ADMIN_EMAIL":   "admin@" + in.ClusterName + ".com",
 				"MYCEL_IAM_FIRST_ADMIN_SUBJECT": in.IAMFirstAdminSubject,
@@ -401,6 +443,17 @@ func RenderAppCore(in *RenderInput) (objs, shadow []Object, skipped []string) {
 			}
 			sort.Strings(keys)
 		}
+		for k, v := range in.AppEnv[name] { // the environment's overrides win
+			if m := exactRef.FindStringSubmatch(v); m != nil {
+				rest[k] = envSecret(k, m[1], "mycel-app-env", false)
+			} else {
+				rest[k] = envVal(k, v)
+			}
+			if !contains(keys, k) {
+				keys = append(keys, k)
+			}
+		}
+		sort.Strings(keys)
 		env := head
 		for _, k := range keys {
 			env = append(env, rest[k])
@@ -446,6 +499,9 @@ func RenderAppCore(in *RenderInput) (objs, shadow []Object, skipped []string) {
 		if in.TraefikIP != "" {
 			pod["hostAliases"] = []any{map[string]any{"hostnames": hostnames, "ip": in.TraefikIP}}
 		}
+		if in.NoPullSecret {
+			delete(pod, "imagePullSecrets")
+		}
 		dep := Object{"apiVersion": "apps/v1", "kind": "Deployment",
 			"metadata": map[string]any{"annotations": map[string]any{}, "labels": map[string]any{"app": N, "mycel.io/app-core-series": "0.2"},
 				"name": N, "namespace": in.Namespace},
@@ -457,6 +513,11 @@ func RenderAppCore(in *RenderInput) (objs, shadow []Object, skipped []string) {
 						"annotations": map[string]any{"mycel.dev/host-apps": short16(string(hostApps)), "mycel.dev/host-delegation-targets": short16(string(targets))},
 						"labels":      map[string]any{"app": N}},
 					"spec": pod}}}
+		if in.ImageIDs {
+			if i := strings.Index(image, "@"); i >= 0 {
+				dep["spec"].(map[string]any)["template"].(map[string]any)["metadata"].(map[string]any)["annotations"].(map[string]any)["mycel.build/image-id"] = image[i+1:]
+			}
+		}
 		if isIAM {
 			container["volumeMounts"] = append(container["volumeMounts"].([]any), map[string]any{"mountPath": "/etc/mycel/iam", "name": "mycel-iam-configuration", "readOnly": true})
 			pod["volumes"] = append(pod["volumes"].([]any), map[string]any{"configMap": map[string]any{"name": "mycel-iam-configuration"}, "name": "mycel-iam-configuration"})
@@ -493,7 +554,7 @@ func ingress(in *RenderInput, N, host, token string, platform bool) Object {
 			path("/api/system", "Exact"), path("/m/"+token+"/", "Exact"), path("/m/"+token+"/api/", "Prefix"), path("/m/"+token+"/assets/", "Prefix")}
 	}
 	return Object{"apiVersion": "networking.k8s.io/v1", "kind": "Ingress",
-		"metadata": map[string]any{"annotations": map[string]any{"traefik.ingress.kubernetes.io/router.entrypoints": "web,websecure"},
+		"metadata": map[string]any{"annotations": map[string]any{"traefik.ingress.kubernetes.io/router.entrypoints": or(in.Entrypoints, "web,websecure")},
 			"name": N + "-ingress", "namespace": in.Namespace},
 		"spec": map[string]any{"ingressClassName": in.IngressClass, "rules": []any{map[string]any{
 			"host": host + "." + in.Domain, "http": map[string]any{"paths": paths}}}}}
@@ -531,6 +592,10 @@ func RenderWorkers(in *RenderInput) (objs []Object, skipped []string) {
 		if a.Kind != "project" {
 			continue
 		}
+		if why, ex := in.Exclude[a.Name]; ex {
+			skipped = append(skipped, a.Name+" (left as it is: "+why+")")
+			continue
+		}
 		image := in.Images[a.Name]
 		if image == "" {
 			skipped = append(skipped, a.Name+" (no image in the release)")
@@ -550,6 +615,13 @@ func RenderWorkers(in *RenderInput) (objs []Object, skipped []string) {
 			vals["TEMPORAL_NAMESPACE"] = envVal("TEMPORAL_NAMESPACE", "default")
 		}
 		for k, v := range a.Env {
+			if m := exactRef.FindStringSubmatch(v); m != nil {
+				vals[k] = envSecret(k, m[1], "mycel-app-env", false)
+			} else {
+				vals[k] = envVal(k, v)
+			}
+		}
+		for k, v := range in.AppEnv[a.Name] { // the environment's overrides win, as for apps
 			if m := exactRef.FindStringSubmatch(v); m != nil {
 				vals[k] = envSecret(k, m[1], "mycel-app-env", false)
 			} else {
@@ -581,9 +653,7 @@ func RenderWorkers(in *RenderInput) (objs []Object, skipped []string) {
 				"spec": map[string]any{"replicas": 1, "revisionHistoryLimit": 3,
 					"selector": map[string]any{"matchLabels": map[string]any{"app": N}},
 					"template": map[string]any{"metadata": map[string]any{"labels": map[string]any{"app": N}},
-						"spec": map[string]any{"automountServiceAccountToken": false, "containers": []any{container},
-							"imagePullSecrets": []any{map[string]any{"name": "mycel-ghcr-pull"}}, "priorityClassName": "mycel-app",
-							"serviceAccountName": N, "terminationGracePeriodSeconds": 90}}}})
+						"spec": workerPod(in, N, container)}}})
 		if a.Port != 0 {
 			objs = append(objs, Object{"apiVersion": "v1", "kind": "Service", "metadata": meta(N),
 				"spec": map[string]any{"ports": []any{map[string]any{"port": a.Port, "targetPort": a.Port}}, "selector": map[string]any{"app": N}}})
@@ -641,7 +711,11 @@ func (in *RenderInput) consoleTopology() string {
 		case "iam":
 			apps = append(apps, app{Name: a.Name, Kind: "iam", Host: a.Host, Modules: []string{rawToken(in, a.Name)}})
 		default:
-			apps = append(apps, app{Name: a.Name, Kind: "module", Host: a.Host, Modules: []string{rawToken(in, a.Name)}})
+			mods := []string{rawToken(in, a.Name)}
+			if live, ok := in.ConsoleModules[a.Name]; ok && in.Exclude[a.Name] != "" {
+				mods = live
+			}
+			apps = append(apps, app{Name: a.Name, Kind: "module", Host: a.Host, Modules: mods})
 		}
 	}
 	for _, s := range in.Desc.Switcher.App {
@@ -655,4 +729,46 @@ func (in *RenderInput) consoleTopology() string {
 		Apps   []app    `json:"apps"`
 	}{fabric, apps})
 	return string(b)
+}
+
+// PinnedImages maps each image-backed member to the image its member file pins
+// (its first pinned image): what a developer's deploy runs when there is no
+// release record.
+func (l *Layout) PinnedImages() map[string]string {
+	out := map[string]string{}
+	ms, _ := l.Materializations()
+	for _, m := range ms {
+		for _, img := range m.Images {
+			if _, _, ok := ParsePin(img); ok {
+				out[m.Name] = img
+				break
+			}
+		}
+	}
+	return out
+}
+
+func workerPod(in *RenderInput, N string, container map[string]any) map[string]any {
+	pod := map[string]any{"automountServiceAccountToken": false, "containers": []any{container},
+		"imagePullSecrets": []any{map[string]any{"name": "mycel-ghcr-pull"}}, "priorityClassName": "mycel-app",
+		"serviceAccountName": N, "terminationGracePeriodSeconds": 90}
+	if in.NoPullSecret {
+		delete(pod, "imagePullSecrets")
+	}
+	return pod
+}
+
+// WorkerImages maps each project member to the image its member Dockerfile
+// starts FROM, when that line pins a digest.
+func (l *Layout) WorkerImages() map[string]string {
+	out := map[string]string{}
+	ms, _ := l.Materializations()
+	for _, m := range ms {
+		if len(m.Images) == 1 {
+			if _, _, ok := ParsePin(m.Images[0]); ok {
+				out[m.Name] = m.Images[0]
+			}
+		}
+	}
+	return out
 }

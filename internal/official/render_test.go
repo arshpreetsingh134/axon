@@ -315,3 +315,47 @@ func TestDemoSubject(t *testing.T) {
 		t.Error("the realm must change the subject")
 	}
 }
+
+func TestRenderWorkersTakeEnvironmentOverrides(t *testing.T) {
+	in := renderFixture(t)
+	p := filepath.Join(t.TempDir(), "mycelfile")
+	desc := renderDescriptor + `
+[[app]]
+name = "example.jobs.worker"
+kind = "project"
+temporal = "temporal:7233"
+[app.env]
+TASK_QUEUE = "example"
+`
+	if err := os.WriteFile(p, []byte(desc), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	d, err := LoadDescriptor(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	in.Desc = d
+	in.Images["example.jobs.worker"] = "reg/jobs@sha256:4"
+	in.AppEnv = map[string]map[string]string{"example.jobs.worker": {"AUTH_MODE": "legacy", "TASK_QUEUE": "dev-queue"}}
+	objs, _ := RenderWorkers(in)
+	dep := byKey(objs)["Deployment/app-example-jobs-worker"]
+	if dep == nil {
+		t.Fatalf("no worker Deployment rendered: %v", objs)
+	}
+	env := dep["spec"].(map[string]any)["template"].(map[string]any)["spec"].(map[string]any)["containers"].([]any)[0].(map[string]any)["env"].([]any)
+	got := map[string]string{}
+	var order []string
+	for _, e := range env {
+		m := e.(map[string]any)
+		got[fmt.Sprint(m["name"])] = fmt.Sprint(m["value"])
+		order = append(order, fmt.Sprint(m["name"]))
+	}
+	if got["AUTH_MODE"] != "legacy" || got["TASK_QUEUE"] != "dev-queue" {
+		t.Fatalf("overrides not applied: %v", got)
+	}
+	for i := 1; i < len(order); i++ {
+		if order[i-1] > order[i] {
+			t.Fatalf("env not sorted: %v", order)
+		}
+	}
+}

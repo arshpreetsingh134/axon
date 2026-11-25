@@ -160,7 +160,7 @@ func LoadDemoPeople(root string) []DemoPerson {
 // identity provider, and the declared people. unknown lists values that only a
 // deploy can produce (a new application's key, a new person's subject).
 func RenderIAMConfig(in *RenderInput, people []DemoPerson, realm, client string, rt IAMRuntime) (obj Object, unknown []string) {
-	issuer := fmt.Sprintf("https://keycloak.%s/realms/%s", in.Domain, realm)
+	issuer := fmt.Sprintf("%s/realms/%s", in.url("keycloak"), realm)
 	type app struct {
 		ID      string              `json:"application_id"`
 		Client  string              `json:"client_id"`
@@ -179,8 +179,11 @@ func RenderIAMConfig(in *RenderInput, people []DemoPerson, realm, client string,
 		host, _, _, _, _ := in.Desc.appEntry(s.App)
 		tok := rawToken(in, s.App)
 		c := catalogFor(tok)
-		for _, t := range c.Teams {
+		for _, t := range c.Teams { // an app left as it is still declares its teams
 			declared[s.App+"."+t.Name] = true
+		}
+		if in.Exclude[s.App] != "" { // left as it is: not registered by this deploy
+			continue
 		}
 		version := rt.CatalogVersion[s.App]
 		if version == "" {
@@ -195,7 +198,7 @@ func RenderIAMConfig(in *RenderInput, people []DemoPerson, realm, client string,
 			unknown = append(unknown, "public key of "+s.App+" (generated at deploy)")
 		}
 		apps = append(apps, app{ID: s.App, Client: s.App, Product: tok, Catalog: version, Roles: c.Roles, Perms: c.RolePermissions,
-			Pages: c.Pages, Teams: c.Teams, Redir: []string{"https://" + host + "." + in.Domain + "/auth/callback"}, JWK: jwk})
+			Pages: c.Pages, Teams: c.Teams, Redir: []string{in.url(host) + "/auth/callback"}, JWK: jwk})
 	}
 	sort.Slice(apps, func(i, j int) bool { return apps[i].ID < apps[j].ID })
 	applications := encodeJSON(struct {

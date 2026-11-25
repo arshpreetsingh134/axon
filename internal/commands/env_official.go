@@ -30,6 +30,19 @@ func officialEnv(m *descriptor.Model, e *envcfg.Env) *official.Layout {
 	return l
 }
 
+// pipelineDev returns the official layout when env is the dev environment of a
+// pipeline-released cluster whose members are image-backed, else nil.
+func pipelineDev(m *descriptor.Model, e *envcfg.Env) *official.Layout {
+	if e == nil || e.Tier != "dev" {
+		return nil
+	}
+	l, ok, err := official.Detect(m.Dir)
+	if err != nil || !ok || len(l.PinnedImages()) == 0 {
+		return nil
+	}
+	return l
+}
+
 // clusterID names the cluster in axon's local state.
 func clusterID(m *descriptor.Model) string { return descriptor.Slug(m.C.Name) }
 
