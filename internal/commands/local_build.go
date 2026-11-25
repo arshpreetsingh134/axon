@@ -28,7 +28,9 @@ type localBuild struct {
 type gitRunner interface {
 	head(dir string) (string, error)
 	dirty(dir, path string) (bool, error)
-	contains(dir, ancestor, commit string) (known, ok bool)
+	// contains reports whether commit holds the pin's work under path: the pin is its ancestor, or every commit the
+	// pin has and commit lacks is a merge (main's merge of develop is beside develop, yet holds nothing develop lacks).
+	contains(dir, ancestor, commit, path string) (known, ok bool)
 	// same reports whether path holds the same content at both commits (known is false when a commit is missing).
 	same(dir, a, b, path string) (known, ok bool)
 }
@@ -52,17 +54,22 @@ func (realGit) same(dir, a, b, path string) (known, ok bool) {
 	return true, err == nil
 }
 
-func (realGit) contains(dir, ancestor, commit string) (known, ok bool) {
+func (realGit) contains(dir, ancestor, commit, path string) (known, ok bool) {
 	if _, err := sh.Output("git", "-C", dir, "cat-file", "-e", ancestor+"^{commit}"); err != nil {
 		return false, false
 	}
-	_, err := sh.Run(sh.Cmd{Name: "git", Args: []string{"-C", dir, "merge-base", "--is-ancestor", ancestor, commit}})
-	return true, err == nil
+	if _, err := sh.Run(sh.Cmd{Name: "git", Args: []string{"-C", dir, "merge-base", "--is-ancestor", ancestor, commit}}); err == nil {
+		return true, true
+	}
+	// Beside: the pin's own (non-merge) commits under path that commit lacks. None means the pin only merged work
+	// that commit already has.
+	out, err := sh.Output("git", "-C", dir, "rev-list", "--no-merges", commit+".."+ancestor, "--", or(path, "."))
+	return true, err == nil && strings.TrimSpace(out) == ""
 }
 
 // planLocalBuilds decides which image-backed members to build. Without --app or --rebuild a member is built when the
-// committed content under its source path differs from its pin's and its checkout moved past the pin (the source
-// lock's commit is an ancestor of HEAD), or when it has uncommitted changes under its source path or a watched
+// committed content under its source path differs from its pin's and its checkout holds the pin's work (the source
+// lock's commit is an ancestor of HEAD, or only merges separate them: main's merge of develop), or when it has uncommitted changes under its source path or a watched
 // directory. A checkout whose source path holds the pin's content is at its pin, whatever its history (a develop merge
 // of the same change as main's). One whose content differs but is behind or beside its pin is not built (that could
 // deploy older code): it is reported; --app builds it anyway. --app <member> builds exactly the named members; --rebuild
@@ -134,7 +141,7 @@ func planLocalBuilds(recipes []descriptor.LocalBuild, mats []official.Materializ
 				}
 			}
 			if pin != "" && pin != head {
-				switch known, ok := git.contains(checkout, pin, head); {
+				switch known, ok := git.contains(checkout, pin, head, mat.SourcePath); {
 				case ok:
 					why = fmt.Sprintf("checkout %s is ahead of the pin %s (%s changed)", short7(head), short7(pin), or(mat.SourcePath, "."))
 				case known:

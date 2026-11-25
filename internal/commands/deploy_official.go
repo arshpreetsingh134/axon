@@ -85,6 +85,20 @@ func runPipelineDevDeploy(c *cli.Ctx, m *descriptor.Model, l *official.Layout, e
 		}
 	}
 
+	// --app limits the rollout too: every other member keeps the local build it runs now (a scoped build must not
+	// put the rest of the namespace back on its pins).
+	if apps := c.Strings("app"); len(apps) > 0 {
+		if local == nil {
+			local = map[string]string{}
+		}
+		for member, img := range localImagesByMember(liveLocalImages(ctx, e.Namespace), layoutMembers(l)) {
+			if _, built := local[member]; !built && !contains(apps, member) {
+				local[member] = img
+				ui.Sub("%s keeps its running local build %s (--app)", member, img)
+			}
+		}
+	}
+
 	// Workflow clients (SPEC.md Appendix C.13): their private key Secrets exist before the render mounts them.
 	desc, err := official.LoadDescriptor(m.Found.Path)
 	if err != nil {
@@ -341,6 +355,73 @@ func imagesOf(objs []official.Object) []string {
 					out = append(out, img)
 				}
 			}
+		}
+	}
+	return out
+}
+
+// liveLocalImages maps each member whose Deployment runs a local build (local/<k8s name>:<id>) to that image.
+func liveLocalImages(ctx, ns string) map[string]string {
+	out, err := sh.Output("kubectl", "--context", ctx, "-n", ns, "get", "deploy", "-o", "json")
+	if err != nil {
+		return nil
+	}
+	var list struct {
+		Items []struct {
+			Spec struct {
+				Template struct {
+					Metadata struct {
+						Annotations map[string]string `json:"annotations"`
+					} `json:"metadata"`
+					Spec struct {
+						Containers []struct {
+							Image string `json:"image"`
+						} `json:"containers"`
+					} `json:"spec"`
+				} `json:"template"`
+			} `json:"spec"`
+			Metadata struct {
+				Name string `json:"name"`
+			} `json:"metadata"`
+		} `json:"items"`
+	}
+	if json.Unmarshal([]byte(out), &list) != nil {
+		return nil
+	}
+	images := map[string]string{}
+	for _, d := range list.Items {
+		if len(d.Spec.Template.Spec.Containers) > 0 && strings.HasPrefix(d.Spec.Template.Spec.Containers[0].Image, "local/") {
+			images[d.Metadata.Name] = d.Spec.Template.Spec.Containers[0].Image
+		}
+	}
+	return images
+}
+
+// layoutMembers are the image-backed members and the workers the layout deploys.
+func layoutMembers(l *official.Layout) []string {
+	var out []string
+	if ms, err := l.Materializations(); err == nil {
+		for _, m := range ms {
+			out = append(out, m.Name)
+		}
+	}
+	for w := range l.WorkerImages() {
+		out = append(out, w)
+	}
+	return out
+}
+
+// localImagesByMember turns Deployment name → local image into member → image: a local build is tagged
+// local/<k8s name of its member>:<id> (local_build.go), so the tag, not the Deployment, names the member.
+func localImagesByMember(byDeployment map[string]string, members []string) map[string]string {
+	byK8s := map[string]string{}
+	for _, m := range members {
+		byK8s[official.K8sName(m)] = m
+	}
+	out := map[string]string{}
+	for _, img := range byDeployment {
+		if m, ok := byK8s[strings.TrimPrefix(imageRepo(img), "local/")]; ok {
+			out[m] = img
 		}
 	}
 	return out

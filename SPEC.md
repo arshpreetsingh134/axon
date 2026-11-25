@@ -988,14 +988,18 @@ the pipeline has built and pinned it. `up --build` closes that gap without a sec
   (the checkout's HEAD). Relative paths resolve against the cluster directory.
 - Selection: `--app` names members (built regardless of drift); `--rebuild` takes every member a
   recipe covers and passes `--no-cache`. Otherwise a member is built when `git diff <pin> HEAD --
-  <source path>` is not empty and the pin (the source lock's commit for its `source_member`) is an
-  ancestor of HEAD, or when `git status` shows changes under its source path or a `watch` directory.
+  <source path>` is not empty and HEAD holds the pin's work (the source lock's commit for its
+  `source_member` is an ancestor of HEAD, or every commit the pin has and HEAD lacks is a merge, as
+  when the pin is main's merge of develop: `git rev-list --no-merges HEAD..<pin> -- <source path>` is
+  empty), or when `git status` shows changes under its source path or a `watch` directory.
   An empty diff means the checkout is at its pin whatever its history. A checkout whose content differs
   but is behind or beside its pin, or without the pin's commit, keeps the pin and is reported. A member no recipe covers keeps its pin.
 - A member whose build fails keeps its pin and is reported; the deploy goes on.
 - Each image is built natively with `docker build` and tagged `local/<k8s name>:<12 hex of its image
   ID>`. The render replaces only those members' images; pull policy stays `IfNotPresent`, so the
   kubelet uses the local store. A rebuild that changes nothing keeps its tag and rolls nothing.
+- `--app` limits the rollout as well: every member not named keeps the local build its Deployment runs
+  (`local/<k8s name>:<id>`) instead of going back to its pin.
 - `--dry-run` reports what would be built and renders with the pins.
 
 ### C.13 Workflow client identity in the dev profile (axon extension)
