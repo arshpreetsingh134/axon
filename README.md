@@ -679,10 +679,12 @@ axon up --build --app shop.app.cart         # build exactly this member (repeata
 axon up --build --rebuild                   # every member a recipe covers, without build cache
 ```
 
-Without `--app`, a member is built when its checkout is ahead of its pin (the source lock's commit
-is an ancestor of HEAD) or has uncommitted changes under its source path or a `watch` directory. A
-checkout behind or beside its pin keeps the pinned image, so `--build` never deploys older code than
-the pipeline's; `--app` builds it anyway. Images are tagged `local/<member>:<12 hex of the image ID>`,
+Without `--app`, a member is built when the committed content under its source path differs from its
+pin's and the checkout is ahead of the pin (the source lock's commit is an ancestor of HEAD), or when
+it has uncommitted changes under its source path or a `watch` directory. Content decides, not history:
+a checkout on `develop` holding the same change `main` merged is at its pin. A checkout whose content
+differs but is behind or beside its pin keeps the pinned image, so `--build` never deploys older code
+than the pipeline's; `--app` builds it anyway. Images are tagged `local/<member>:<12 hex of the image ID>`,
 so an unchanged build rolls nothing. `--module` doesn't apply: each member is one image.
 
 The dev profile (SPEC.md Appendix C.11) serves plain HTTP on the front door's port, uses the local

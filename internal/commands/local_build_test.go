@@ -15,6 +15,7 @@ type fakeGit struct {
 	dirtyAt  map[string]bool
 	ancestry map[string]bool
 	unknown  map[string]bool
+	sameAt   map[string]bool // "a=b|path": the same content
 }
 
 func (f fakeGit) head(dir string) (string, error) {
@@ -24,6 +25,12 @@ func (f fakeGit) head(dir string) (string, error) {
 	return "", errors.New("not a git checkout")
 }
 func (f fakeGit) dirty(dir, path string) (bool, error) { return f.dirtyAt[dir+"|"+path], nil }
+func (f fakeGit) same(dir, a, b, path string) (bool, bool) {
+	if f.unknown[a] || f.unknown[b] {
+		return false, false
+	}
+	return true, f.sameAt[a+"="+b+"|"+path]
+}
 func (f fakeGit) contains(dir, ancestor, commit string) (bool, bool) {
 	if f.unknown[ancestor] {
 		return false, false
@@ -106,7 +113,7 @@ func TestLocalBuildsNeverDeploysACheckoutBehindItsPin(t *testing.T) {
 	g := fakeGit{heads: map[string]string{"/w/repos/p.app": headA, "/w/repos/p.wfc": headA}, unknown: map[string]bool{}}
 	g.unknown = map[string]bool{}
 	bs, notes, err := planLocalBuilds(r, m, l, tk, "/w", "/w/cluster", nil, false, g)
-	if err != nil || len(bs) != 0 || len(notes) != 3 || !strings.Contains(notes[0], "behind or beside the pin") {
+	if err != nil || len(bs) != 0 || len(notes) != 3 || !strings.Contains(notes[0], "behind or beside it") {
 		t.Fatalf("builds %s notes %v err %v", targets(bs), notes, err)
 	}
 	// --app builds it anyway, and only it.
@@ -139,5 +146,24 @@ func TestLocalBuildsRebuildAndErrors(t *testing.T) {
 	orphan := []descriptor.LocalBuild{{Targets: []string{"x.not.materialized"}}}
 	if _, _, err = planLocalBuilds(orphan, m, l, tk, "/w", "/w/cluster", nil, false, g); err == nil || !strings.Contains(err.Error(), "not a [[materialization]]") {
 		t.Fatalf("orphan: %v", err)
+	}
+}
+
+// A checkout on another branch whose source path holds the pin's content (develop's merge of the change main merged)
+// is at its pin: nothing to build, nothing reported. Only a member whose own source path changed is built.
+func TestLocalBuildsComparesContentNotHistory(t *testing.T) {
+	r, m, l, tk := fixture()
+	g := fakeGit{heads: map[string]string{"/w/repos/p.app": headA, "/w/repos/p.wfc": headA},
+		sameAt:   map[string]bool{pinA + "=" + headA + "|modules/quote": true, pinA + "=" + headA + "|.": true},
+		ancestry: map[string]bool{pinA + ">" + headA: true}}
+	bs, notes, err := planLocalBuilds(r, m, l, tk, "/w", "/w/cluster", nil, false, g)
+	if err != nil || targets(bs) != "p.app.rating" || len(notes) != 0 || !strings.Contains(bs[0].Why, "modules/rating changed") {
+		t.Fatalf("builds %s notes %v err %v", targets(bs), notes, err)
+	}
+	// Same content but uncommitted changes still build.
+	g.dirtyAt = map[string]bool{"/w/repos/p.app|modules/quote": true}
+	bs, _, _ = planLocalBuilds(r, m, l, tk, "/w", "/w/cluster", nil, false, g)
+	if targets(bs) != "p.app.quote,p.app.rating" {
+		t.Fatalf("dirty: %s", targets(bs))
 	}
 }

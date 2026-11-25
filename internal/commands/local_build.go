@@ -28,6 +28,8 @@ type gitRunner interface {
 	head(dir string) (string, error)
 	dirty(dir, path string) (bool, error)
 	contains(dir, ancestor, commit string) (known, ok bool)
+	// same reports whether path holds the same content at both commits (known is false when a commit is missing).
+	same(dir, a, b, path string) (known, ok bool)
 }
 
 type realGit struct{}
@@ -39,6 +41,16 @@ func (realGit) dirty(dir, path string) (bool, error) {
 	out, err := sh.Output("git", "-C", dir, "status", "--porcelain", "--", or(path, "."))
 	return strings.TrimSpace(out) != "", err
 }
+func (realGit) same(dir, a, b, path string) (known, ok bool) {
+	for _, c := range []string{a, b} {
+		if _, err := sh.Output("git", "-C", dir, "cat-file", "-e", c+"^{commit}"); err != nil {
+			return false, false
+		}
+	}
+	_, err := sh.Run(sh.Cmd{Name: "git", Args: []string{"-C", dir, "diff", "--quiet", a, b, "--", or(path, ".")}})
+	return true, err == nil
+}
+
 func (realGit) contains(dir, ancestor, commit string) (known, ok bool) {
 	if _, err := sh.Output("git", "-C", dir, "cat-file", "-e", ancestor+"^{commit}"); err != nil {
 		return false, false
@@ -47,10 +59,12 @@ func (realGit) contains(dir, ancestor, commit string) (known, ok bool) {
 	return true, err == nil
 }
 
-// planLocalBuilds decides which image-backed members to build. Without --app or --rebuild a member is built when its
-// checkout moved past its pin (the source lock's commit is an ancestor of HEAD) or has uncommitted changes under its
-// source path or a watched directory. A checkout that is behind or beside its pin is not built (that would deploy
-// older code): it is reported; --app builds it anyway. --app <member> builds exactly the named members; --rebuild
+// planLocalBuilds decides which image-backed members to build. Without --app or --rebuild a member is built when the
+// committed content under its source path differs from its pin's and its checkout moved past the pin (the source
+// lock's commit is an ancestor of HEAD), or when it has uncommitted changes under its source path or a watched
+// directory. A checkout whose source path holds the pin's content is at its pin, whatever its history (a develop merge
+// of the same change as main's). One whose content differs but is behind or beside its pin is not built (that could
+// deploy older code): it is reported; --app builds it anyway. --app <member> builds exactly the named members; --rebuild
 // builds every member a recipe covers. Notes explain every member left on its pin.
 func planLocalBuilds(recipes []descriptor.LocalBuild, mats []official.Materialization, lock []official.LockMember,
 	tokens map[string][]string, workspace, cluster string, apps []string, all bool, git gitRunner) ([]localBuild, []string, error) {
@@ -114,11 +128,16 @@ func planLocalBuilds(recipes []descriptor.LocalBuild, mats []official.Materializ
 		default:
 			pin := pinned[mat.SourceMember]
 			if pin != "" && pin != head {
+				if known, same := git.same(checkout, pin, head, mat.SourcePath); known && same {
+					pin = head // the source path holds the pin's content: the pinned image is that build
+				}
+			}
+			if pin != "" && pin != head {
 				switch known, ok := git.contains(checkout, pin, head); {
 				case ok:
-					why = fmt.Sprintf("checkout %s is ahead of the pin %s", short7(head), short7(pin))
+					why = fmt.Sprintf("checkout %s is ahead of the pin %s (%s changed)", short7(head), short7(pin), or(mat.SourcePath, "."))
 				case known:
-					notes = append(notes, fmt.Sprintf("%s: checkout %s is behind or beside the pin %s; it keeps its pinned image (--app %s builds it anyway)", t, short7(head), short7(pin), t))
+					notes = append(notes, fmt.Sprintf("%s: checkout %s differs from the pin %s and is behind or beside it; it keeps its pinned image (--app %s builds it anyway)", t, short7(head), short7(pin), t))
 					continue
 				default:
 					notes = append(notes, fmt.Sprintf("%s: the pin %s is not in the checkout (fetch it); it keeps its pinned image (--app %s builds it anyway)", t, short7(pin), t))
