@@ -202,8 +202,13 @@ func TestCheckPinsFindsProblems(t *testing.T) {
 	ids := map[string]bool{}
 	for _, f := range fs {
 		ids[f.ID] = true
-		if f.Severity != "blocking" {
-			t.Errorf("%s is %s", f.ID, f.Severity)
+		// the pipeline releases over a smoke-only digest drift and an unlocked build revision (SPEC.md C.6)
+		want := map[string]string{"DIGEST_DISAGREES": "risk", "BUILD_REVISION_NOT_LOCKED": "risk"}[f.ID]
+		if want == "" {
+			want = "blocking"
+		}
+		if f.Severity != want {
+			t.Errorf("%s is %s, want %s", f.ID, f.Severity, want)
 		}
 	}
 	for _, want := range []string{"DIGEST_DISAGREES", "BUILD_REVISION_NOT_LOCKED", "IMAGE_NOT_PINNED", "MEMBER_NO_IMAGE"} {
@@ -214,4 +219,24 @@ func TestCheckPinsFindsProblems(t *testing.T) {
 	if len(fs) != 4 {
 		t.Errorf("want 4 findings, got %d: %+v", len(fs), fs)
 	}
+}
+
+func TestCheckPinsBlocksADeployedDigestDrift(t *testing.T) {
+	root := fixture(t)
+	// a worker Dockerfile deploys another build of the member's image: the release would run two builds of one image
+	write(t, root, MaterializationsDir+"/example.worker2/.mycel.infra/Dockerfile", "FROM ghcr.io/example/business-billing@"+dB+"\n")
+	l, _, _ := Detect(root)
+	fs, err := CheckPins(l)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range fs {
+		if f.ID == "DIGEST_DISAGREES" {
+			if f.Severity != "blocking" {
+				t.Fatalf("deployed drift is %s", f.Severity)
+			}
+			return
+		}
+	}
+	t.Fatalf("no DIGEST_DISAGREES in %+v", fs)
 }
