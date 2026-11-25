@@ -90,19 +90,30 @@ func devIdentities(desc *official.Descriptor, overrides map[string]map[string]st
 		if id == "" || file == "" || strings.Contains(id, "${") || strings.Contains(file, "${") {
 			continue
 		}
-		var aud map[string]string
+		var aud, mapped map[string]string
 		_ = json.Unmarshal([]byte(env["WFC_SERVICE_AUDIENCES"]), &aud)
+		perAudience := strings.TrimSpace(env["WFC_SERVICE_CLIENT_PER_AUDIENCE"]) == "1"
+		if !perAudience {
+			// targets of the identity map have their own principals (serviceClients, SPEC.md Appendix C.14)
+			_ = json.Unmarshal([]byte(env["WFC_SERVICE_IDENTITIES"]), &mapped)
+		}
 		seen := map[string]bool{}
 		var sites []string
-		for _, s := range aud {
+		for origin, s := range aud {
+			if _, own := mapped[origin]; own {
+				continue
+			}
 			if s = strings.TrimSpace(s); s != "" && !seen[s] {
 				seen[s] = true
 				sites = append(sites, s)
 			}
 		}
 		sort.Strings(sites)
+		if len(sites) == 0 && len(mapped) > 0 {
+			continue // every target has its own principal: the default one is not used
+		}
 		out = append(out, devIdentity{Member: a.Name, ClientID: id, KeyFile: file, Sites: sites, Issuer: strings.TrimSpace(env["WFC_IAM_ISSUER"]),
-			Secret: official.K8sName(a.Name) + "-service-key", PerAudience: strings.TrimSpace(env["WFC_SERVICE_CLIENT_PER_AUDIENCE"]) == "1"})
+			Secret: official.K8sName(a.Name) + "-service-key", PerAudience: perAudience})
 	}
 	return out
 }
@@ -211,7 +222,7 @@ func provisionIdentities(ids []devIdentity, iamOrigin, actor, password, ctx, ns 
 			if err != nil {
 				return err
 			}
-			n, err := provisionPrincipal(c, pr.ID, pr.Sites, id, key, iamOrigin, actor)
+			n, err := provisionPrincipal(c, pr.ID, pr.Sites, workflowCallRoles, or(id.Issuer, iamOrigin), key, iamOrigin, actor)
 			if err != nil {
 				return err
 			}
@@ -255,9 +266,29 @@ func imageCatalogs(images map[string]string) map[string]official.Catalog {
 	return out
 }
 
-// provisionPrincipal registers one service principal with exactly this environment's key, grants it the catalog roles
-// that carry workflow.call on each of its sites, and returns the number of sites it gets a token for.
-func provisionPrincipal(c *iamadmin.Client, principal string, sites []string, id devIdentity, key []byte, iamOrigin, actor string) (int, error) {
+// roleChooser picks the catalog roles to grant on a site from its roles (code → permissions); "" or a reason when none.
+type roleChooser func(site string, catalog map[string][]string) ([]string, string)
+
+// workflowCallRoles are the roles that carry workflow.call: what a workflow worker needs on the apps it calls.
+func workflowCallRoles(_ string, catalog map[string][]string) ([]string, string) {
+	var out []string
+	for code, perms := range catalog {
+		for _, p := range perms {
+			if p == "workflow.call" {
+				out = append(out, code)
+			}
+		}
+	}
+	sort.Strings(out)
+	if len(out) == 0 {
+		return nil, "no role of its catalog grants workflow.call"
+	}
+	return out, ""
+}
+
+// provisionPrincipal registers one service principal with exactly this environment's key, grants it the roles choose
+// picks on each of its sites, and returns the number of sites it gets a token for.
+func provisionPrincipal(c *iamadmin.Client, principal string, sites []string, choose roleChooser, issuer string, key []byte, iamOrigin, actor string) (int, error) {
 	pub, err := iamadmin.PublicPEM(key)
 	if err != nil {
 		return 0, err
@@ -310,21 +341,27 @@ func provisionPrincipal(c *iamadmin.Client, principal string, sites []string, id
 			ui.Warn("%s: cannot read site %s: %v", principal, site, err)
 			continue
 		}
-		var want []string
-		held := false
+		catalog := map[string][]string{}
+		holding := map[string]bool{}
 		for _, r := range s.Roles {
-			holds := false
+			catalog[r.Code] = r.Permissions
 			for _, p := range r.People {
-				holds = holds || p.ID == principal
-			}
-			for _, perm := range r.Permissions {
-				if perm == "workflow.call" {
-					if holds {
-						held = true
-					} else {
-						want = append(want, r.Code)
-					}
+				if p.ID == principal {
+					holding[r.Code] = true
 				}
+			}
+		}
+		roles, why := choose(site, catalog)
+		var want []string
+		held := len(roles) > 0
+		for _, r := range roles {
+			if _, ok := catalog[r]; !ok {
+				ui.Warn("%s: role %s is not in the catalog of %s", principal, r, site)
+				held = false
+				continue
+			}
+			if !holding[r] {
+				want = append(want, r)
 			}
 		}
 		if len(want) > 0 {
@@ -335,14 +372,14 @@ func provisionPrincipal(c *iamadmin.Client, principal string, sites []string, id
 			held = true
 		}
 		if !held {
-			ui.Sub("%s: no role of its catalog grants workflow.call; not granted", site)
+			ui.Sub("%s on %s: %s; not granted", principal, site, or(why, "no role to grant"))
 			continue
 		}
 		granted = append(granted, site)
 	}
 	ok := 0
 	for _, site := range granted {
-		if err := iamadmin.TokenCheck(iamOrigin, or(id.Issuer, iamOrigin), principal, site, key); err != nil {
+		if err := iamadmin.TokenCheck(iamOrigin, issuer, principal, site, key); err != nil {
 			ui.Warn("%s: no token for %s: %v", principal, site, err)
 			continue
 		}

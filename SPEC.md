@@ -1028,3 +1028,27 @@ Observed in Mycel IAM 0.2.0-rc.28, and why the per-site form exists: a service p
 more than one site gets tokens, but the target host's session check refuses them
 (`session_ended_by_iam`); IDs are letters, digits, `.`, `_`, `-`, at most 64 characters; a public
 key once registered on one principal is refused (`invalid_client`) on another, even after revocation.
+
+### C.14 Service clients in the dev profile (axon extension)
+
+Besides the per-site workflow principals of C.13, members may declare single-site service clients, each a principal
+with its own key that calls exactly one application. The dev deploy finds them in each member's environment (with
+the environment's overrides) and provisions them the same way:
+
+- **A workflow client's identity map:** `WFC_SERVICE_IDENTITIES` (JSON, origin → env prefix, ignored when
+  `WFC_SERVICE_CLIENT_PER_AUDIENCE=1`) with `WFC_SERVICE_AUDIENCES` (origin → application): principal
+  `<prefix>CLIENT_ID`, key `<prefix>KEY_PEM_BASE64`. The C.13 default principal then covers only the origins the map
+  does not; none, when it maps them all.
+- **An app-to-app client:** `<T>_CLIENT_ID` with `<T>_CLIENT_AUDIENCE` (the application it calls) and
+  `<T>_CLIENT_KEY_PEM_BASE64`.
+
+Only keys given as an app-env Secret reference (`${NAME}`) are managed: before the render, every such `NAME` missing
+or empty in Secret `mycel-app-env` gets a new P-256 key, stored as the base64 of its PEM (a later `kubectl apply` of
+that Secret keeps keys it did not apply). A client whose ID or audience is still a reference, or whose key is inline
+or a file, is reported and left alone; a principal declared for two sites or keys keeps its first declaration.
+
+After the rollout each client is registered (owner: `[fabric.console] push_actor`), made to hold exactly that key,
+and granted on its site, then checked with a token request. The roles: the overlay's `[service_roles]` entry for the
+principal (`"<principal>" = ["<role>", …]`); else the catalog role named like the principal; else the catalog's only
+role with permissions besides `access` and `admin`; else, for an identity-map entry, the roles that carry
+`workflow.call`. Otherwise the client is reported and not granted.
