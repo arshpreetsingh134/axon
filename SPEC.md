@@ -961,3 +961,23 @@ by `axon up` from the same pins. It renders with the official rules, with these 
 The deploy applies only created or changed objects (client-side apply, so the last-applied
 annotation stays the plan's oracle), waits for each rolled-out Deployment, and scales to 0 an
 unrendered `<name>` Deployment once its rendered `<name>-worker` is ready.
+
+### C.12 Local builds in the dev profile (axon extension)
+
+The reference tool's laptop deploy runs these clusters' pinned images; it cannot run a change before
+the pipeline has built and pinned it. `up --build` closes that gap without a second build recipe:
+
+- `[[local_build]]` in `axon.toml` (never in the descriptor) maps members to the pipeline's
+  Dockerfile, context, named contexts (`--build-context`) and build args, with per-member args. Values
+  may use `{workspace}`, `{cluster}`, `{target}`, `{token}` (the member's first `[[compose]]` token),
+  `{checkout}` (`[[materialization]] local_checkout_path`), `{source_path}`, `{source}` and `{commit}`
+  (the checkout's HEAD). Relative paths resolve against the cluster directory.
+- Selection: `--app` names members (built regardless of drift); `--rebuild` takes every member a
+  recipe covers and passes `--no-cache`. Otherwise a member is built when the source lock's commit for
+  its `source_member` is an ancestor of the checkout's HEAD and differs from it, or when `git status`
+  shows changes under its source path or a `watch` directory. A checkout behind or beside its pin, or
+  without the pin's commit, keeps the pin and is reported. A member no recipe covers keeps its pin.
+- Each image is built natively with `docker build` and tagged `local/<k8s name>:<12 hex of its image
+  ID>`. The render replaces only those members' images; pull policy stays `IfNotPresent`, so the
+  kubelet uses the local store. A rebuild that changes nothing keeps its tag and rolls nothing.
+- `--dry-run` reports what would be built and renders with the pins.

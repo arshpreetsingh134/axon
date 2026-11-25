@@ -23,15 +23,21 @@ import (
 // objects the plan creates or changes (kubectl apply, so each keeps the
 // last-applied configuration the plan compares with), waits for every rolled
 // Deployment, retires the old-layout worker a newly created worker replaces,
-// and runs the cluster's post_deploy hooks. Nothing is built: the images are
-// the pipeline's.
+// and runs the cluster's post_deploy hooks. The images are the pipeline's pins;
+// with --build, the members a [[local_build]] recipe covers are built from the
+// developer's checkouts with the pipeline's Dockerfile when the checkout moved
+// past its pin or has uncommitted changes (--app names members, --rebuild takes
+// every one), and run instead of their pins (SPEC.md Appendix C.12).
 func runPipelineDevDeploy(c *cli.Ctx, m *descriptor.Model, l *official.Layout, e *envcfg.Env) error {
 	ctx := or(or(c.String("context"), e.Context), m.C.Deploy.Context)
 	if ctx == "" {
 		return cli.Usage("%s: pass --context <your kube context for the dev cluster>", c.Verb.Name)
 	}
-	if c.Bool("build") || len(c.Strings("module")) > 0 {
-		return cli.Usage("%s: the dev environment of this cluster runs the pipeline's pinned images; --build and --module do not apply (bump a pin and redeploy)", c.Verb.Name)
+	if len(c.Strings("module")) > 0 {
+		return cli.Usage("%s: the dev environment of this cluster runs one image per member; --module does not apply (use --build, with --app <member> to build one)", c.Verb.Name)
+	}
+	if !c.Bool("build") && (len(c.Strings("app")) > 0 || c.Bool("rebuild")) {
+		return cli.Usage("%s: --app and --rebuild choose what --build builds; add --build", c.Verb.Name)
 	}
 	dry := c.Bool("dry-run")
 	timeout := 10 * time.Minute
@@ -43,7 +49,42 @@ func runPipelineDevDeploy(c *cli.Ctx, m *descriptor.Model, l *official.Layout, e
 		timeout = d
 	}
 
-	r, err := renderOfficial(m, l, e, e.Name, "", ctx, false)
+	var local map[string]string
+	if c.Bool("build") {
+		if len(m.Overlay.LocalBuild) == 0 {
+			return cli.Usage("%s --build: this cluster has no [[local_build]] recipe in its overlay (SPEC.md Appendix C.12)", c.Verb.Name)
+		}
+		lock, err := l.Lock()
+		if err != nil {
+			return err
+		}
+		_, tokens, err := l.MemberMeta()
+		if err != nil {
+			return err
+		}
+		builds, notes, err := planLocalBuilds(m.Overlay.LocalBuild, l.Workflow.Materializations, lock, tokens, m.Root, m.Dir,
+			c.Strings("app"), c.Bool("rebuild"), realGit{})
+		if err != nil {
+			return err
+		}
+		for _, n := range notes {
+			ui.Sub("%s", n)
+		}
+		if len(builds) == 0 {
+			ui.Note("--build: every checkout is at its pin; nothing to build")
+		}
+		if dry {
+			for _, b := range builds {
+				ui.Sub("would build %s (%s) with %s", b.Target, b.Why, l.Rel(b.Dockerfile))
+			}
+		} else if len(builds) > 0 {
+			if local, err = buildLocal(builds, c.Bool("rebuild")); err != nil {
+				return err
+			}
+		}
+	}
+
+	r, err := renderOfficial(m, l, e, e.Name, "", ctx, false, local)
 	if err != nil {
 		return err
 	}

@@ -40,6 +40,18 @@ type Workflow struct {
 	OfficialRegistry  string   `toml:"official_registry"`
 	Environments      []string `toml:"environments"`
 	ReleasePlatforms  []string `toml:"release_platforms"`
+	// Materializations name, for each image-backed member, the source its image is built from.
+	Materializations []Materialization `toml:"materialization"`
+}
+
+// Materialization is one [[materialization]] of the workflow file: an image-backed member, the source-lock member its
+// image is built from, and where a developer's checkout of that source sits (relative to the workspace root).
+type Materialization struct {
+	Target            string `toml:"target"`
+	SourceMember      string `toml:"source_member"`
+	LocalCheckoutPath string `toml:"local_checkout_path"`
+	SourcePath        string `toml:"source_path"`
+	MetadataPath      string `toml:"metadata_path"`
 }
 
 // Layout is a detected official cluster repository.

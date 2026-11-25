@@ -26,7 +26,7 @@ func runOfficialPlan(c *cli.Ctx, m *descriptor.Model, l *official.Layout, e *env
 	if !offline && ctx == "" {
 		return cli.Usage("env plan: pass --context <your kube context for the cluster>, or --offline to only render")
 	}
-	r, err := renderOfficial(m, l, e, env, c.Arg(1), ctx, offline)
+	r, err := renderOfficial(m, l, e, env, c.Arg(1), ctx, offline, nil)
 	if err != nil {
 		return err
 	}
@@ -141,7 +141,8 @@ type rendered struct {
 // pinned images (github/materializations) with plain HTTP on the front door,
 // the local Docker Postgres and the environment's overrides, and leaves the
 // running fabric, databases and NetworkPolicies to the cluster.
-func renderOfficial(m *descriptor.Model, l *official.Layout, e *envcfg.Env, env, release, ctx string, offline bool) (*rendered, error) {
+// local maps image-backed members to images built from the developer's checkouts (dev only; see up --build).
+func renderOfficial(m *descriptor.Model, l *official.Layout, e *envcfg.Env, env, release, ctx string, offline bool, local map[string]string) (*rendered, error) {
 	dev := e.Tier == "dev"
 	desc, err := official.LoadDescriptor(m.Found.Path)
 	if err != nil {
@@ -159,6 +160,9 @@ func renderOfficial(m *descriptor.Model, l *official.Layout, e *envcfg.Env, env,
 		version = "local"
 		in.Images = l.PinnedImages()
 		for k, v := range l.WorkerImages() {
+			in.Images[k] = v
+		}
+		for k, v := range local {
 			in.Images[k] = v
 		}
 		in.Scheme, in.PGDocker, in.ImageIDs = "http", true, true

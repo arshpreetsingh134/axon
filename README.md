@@ -649,8 +649,41 @@ axon up                           # deploy
 ones the plan creates or changes, keeping each object's last-applied configuration. Before applying,
 it pulls any image your local image store lacks, using your own `docker login`, because a dev cluster
 has no image pull secret. It then waits for every rolled-out Deployment and runs the cluster's
-`post_deploy` hooks. Nothing is built, so `--build` and `--module` don't apply: bump a pin and
-redeploy.
+`post_deploy` hooks.
+
+To run your own code there, without waiting for the pipeline to build and pin it, add
+`[[local_build]]` recipes to the cluster's `axon.toml` and pass `--build`. A recipe names the
+pipeline's Dockerfile, build context, named contexts and build args for some members, so your image
+is built exactly like the pipeline's:
+
+```toml
+[[local_build]]
+targets    = ["shop.app.cart", "shop.app.orders"]   # [[materialization]] targets of github/workflow.toml
+dockerfile = "github/app-build/Dockerfile"           # paths are relative to the cluster directory
+context    = "github/app-build"
+watch      = ["runtime/shared"]                       # uncommitted changes here also call for a rebuild
+[local_build.contexts]
+source     = "{checkout}"                             # the member's checkout ([[materialization]] local_checkout_path)
+descriptor = "."
+[local_build.args]
+TOKEN           = "{token}"
+SOURCE_REVISION = "{commit}"
+[local_build.target_args."shop.app.orders"]           # args for one member win over [local_build.args]
+BUILD_LDFLAGS = "-X main.flag=1"
+```
+
+```bash
+axon up --build --dry-run                   # which members would be built, and why
+axon up --build                             # build what changed, deploy it, keep the pins for the rest
+axon up --build --app shop.app.cart         # build exactly this member (repeatable)
+axon up --build --rebuild                   # every member a recipe covers, without build cache
+```
+
+Without `--app`, a member is built when its checkout is ahead of its pin (the source lock's commit
+is an ancestor of HEAD) or has uncommitted changes under its source path or a `watch` directory. A
+checkout behind or beside its pin keeps the pinned image, so `--build` never deploys older code than
+the pipeline's; `--app` builds it anyway. Images are tagged `local/<member>:<12 hex of the image ID>`,
+so an unchanged build rolls nothing. `--module` doesn't apply: each member is one image.
 
 The dev profile (SPEC.md Appendix C.11) serves plain HTTP on the front door's port, uses the local
 Postgres container, and applies `environments/dev.overrides.toml` last, to workers too. A member that
