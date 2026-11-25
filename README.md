@@ -44,6 +44,7 @@ want production-shaped environments **without becoming DevOps engineers**.
 - [Quick start](#quick-start)
 - [Core concepts](#core-concepts)
 - [Capabilities](#capabilities)
+- [Release and deploy preflight](#release-and-deploy-preflight)
 - [The descriptor](#the-descriptor)
 - [Command reference](#command-reference)
 - [Configuration and environment variables](#configuration-and-environment-variables)
@@ -555,6 +556,85 @@ seeding data, or running smoke tests after a deploy. Hooks receive `AXON_CLUSTER
 
 ---
 
+## Release and deploy preflight
+
+Some cluster repositories are released and deployed by a GitHub Actions pipeline that another tool
+generates (mycel-gh, in mycel compatibility mode). axon detects them by `github/workflow.toml`. For
+those clusters axon doesn't replace the pipeline. It **checks locally, in seconds, what the
+pipeline would refuse or change**, so a release or a deploy doesn't fail halfway through, or change
+something you didn't expect.
+
+| Check | What it catches | Needs |
+|---|---|---|
+| `axon release lock --check` | A pinned source commit that is not on its repository's `main`. The release pipeline's gate refuses those. Ancestry is checked with Git on cached mirrors, so large differences can't break it. | Git read access to the source repositories |
+| `axon release check --pins` | An image pinned to different digests in different places (member files, Dockerfiles, workflows), an unpinned member image, or a build workflow that builds a different commit than the source lock | Nothing beyond the checkout |
+| `axon env check <env>` | A `"${NAME}"` in a descriptor `[app.env]` that the environment's pre-provisioned app env secret doesn't hold. The deploy stops on those. | The key inventory (below) |
+| `axon env plan <env> [<release>]` | Every object the deploy would create or change, rendered locally and compared with what the cluster last applied | Read access to the namespace |
+| `axon ci deploy <env> <release> --dry-run` | Another deploy run already queued or running, a release record that isn't on `main` yet, or missing secret keys, checked against `origin/main` because that is what the deploy reads | A GitHub token |
+
+### Before you start
+
+- axon 0.5.1 or later (`axon version`).
+- A GitHub token for the cluster repository: `gh auth login`, or `GITHUB_TOKEN`.
+- For `env plan`: a kube context for the cluster that uses **your own identity**. On AKS:
+  `az login`, then `az aks get-credentials ... --context <name> --format exec` and
+  `kubelogin convert-kubeconfig -l azurecli --context <name>`. Read access to the namespace is enough.
+
+### The key inventory
+
+`axon env check` compares the keys the descriptor requires with the key **names** the environment's
+secret holds. Those names live only in axon's local state, `~/.config/axon/inventory/<cluster>/<env>.keys`,
+never in a repository and never with values.
+
+```bash
+axon env keys <env>                          # show required keys and what the inventory says the secret holds
+axon env keys <env> --live --context <ctx>   # read the names from the cluster (needs `get` on the secret)
+axon env keys <env> --add KEY_ONE,KEY_TWO    # or record them by hand
+```
+
+### A release, step by step
+
+```bash
+axon release lock --check                    # every pinned commit is on main
+axon release check --pins                    # every image pin agrees
+axon release next                            # the next version, counting records already on main
+# ... the pipeline builds the images ...
+axon release pin --from-run <run>,<run>      # write the pushed digests into every pin; review with git diff
+# ... merge the pins, run the release pipeline ...
+axon release record --from-run <run> --select <env>   # add the record and select it for the environment
+axon release diff <previous> <new> --markdown          # what changed, traced to commits and pull requests
+```
+
+`release pin` and `release record` write ordinary files (member pins and `releases/<version>.toml`)
+and commit nothing. Review them and open a pull request as usual.
+
+### A deploy, step by step
+
+```bash
+axon env check <env>                                   # required keys are in the secret
+axon env plan <env> <release> --context <ctx>          # what the deploy would create or change
+axon ci deploy <env> <release> --check                 # the pipeline's own dry run, with the guards
+axon ci deploy <env> <release>                         # the real deploy; asks for confirmation
+```
+
+`env plan` changes nothing. It renders the deploy's objects from the descriptor, the member files, the
+release record, the environment file and the platform outputs, then compares each with the live
+object's last-applied configuration:
+
+- `unchanged`: the deploy leaves it alone;
+- `~ change`: the deploy will change it, and the differing fields are listed (`--verbose` shows all);
+- `+ create`: the deploy will create it.
+
+A plan of the release that is already deployed should show every rendered object unchanged. If it
+doesn't, someone deployed something else, or the cluster has drifted; find out before you deploy.
+
+A few values that come from secrets or the identity provider are read from the cluster: the front
+door's internal IP, applications' public keys, the platform catalogs' versions, and the first
+administrator. Two objects are not rendered: the IAM schema, which ships inside the IAM image, and the
+secrets fingerprint, which needs secret values.
+
+---
+
 ## The descriptor
 
 ```toml
@@ -619,6 +699,7 @@ Run `axon <verb> --help` for every flag of a verb.
 | **Apps** | `app new` · `app add module` · `app remove module` · `app set` · `app check [--fix]` · `app build` · `app run` · `app test` |
 | **Environments** | `env new` · `env list` · `env show` · `env set` · `env unset` · `env check` · `env plan` · `env deploy` · `env undeploy` · `env status [--json\|--watch]` · `env logs` · `env restart` · `env test` · `env diagnose` · `env iam-keys` · `env rotate-iam-key` |
 | **Releases** | `release cut [--bump patch\|minor\|major]` · `release create [--build] [--push] [--registry R] [--platform P,…]` · `release list` · `release show` · `release check` · `release lock` · `release checkout` |
+| **Preflight** (pipeline-released clusters) | `release lock --check [--lock-only] [--branch B]` · `release check --pins` · `release next` · `release diff <a> <b> [--markdown]` · `release pin --from-run ID,… [--only T] [--dry-run]` · `release record --from-run ID [--select ENV]` · `env check <env> [--live]` · `env keys <env> [--live\|--add\|--remove]` · `env plan <env> [<release>] [--context C] [--offline] [--out DIR]` · `ci deploy <env> <release> [--check] [--dry-run] [--queue]` |
 | **CI/CD** | `ci init [--dry-run] [--redetect]` · `ci check [--diff]` · `ci secrets [--set] [--kubeconfig F]` · `ci environments [--apply]` · `ci status [--json]` · `ci watch` · `ci logs [--failed] [--run ID] [--job NAME]` |
 | **Secrets** | `secrets set <NAME>` · `secrets list` · `secrets rm` · `secrets import [--remove]` · `secrets exec -- <cmd>` |
 | **Tooling** | `version` · `completion bash\|zsh\|fish` |
@@ -690,6 +771,13 @@ carries a single JSON document, which makes axon easy to script.
 | `Multi-platform build is not supported` | Create a builder that supports it: `docker buildx create --use` (CI sets one up automatically). |
 | `ci environments --apply` fails on reviewers | GitHub allows required reviewers on private repositories only with a paid plan. Remove `reviewers`, or make the repository public. |
 | A CI deploy can't pull images (`ImagePullBackOff`) | For GHCR, give `AXON_GHCR_TOKEN` `read:packages`; for other registries, set `AXON_REGISTRY_USERNAME` / `AXON_REGISTRY_PASSWORD`. |
+| `release lock --check`: `not on main` | The pinned commit exists only on another branch. Merge it to `main`, or pin a commit that is on `main`. |
+| `env check`: `KEY_NOT_IN_SECRET` | The descriptor now references a key the environment's secret lacks. Have someone with access add it to the secret, then run `axon env keys <env> --live`, or remove the reference. |
+| `env check`: `KEY_INVENTORY_MISSING` | Record the secret's key names once: `axon env keys <env> --live --context <ctx>`, or `--add` them. |
+| `env keys --live`: `forbidden` | Your role can't read secrets. Ask for `get` on the app env secret, or record the names with `--add`. |
+| `env plan` shows many image changes on a release you think is deployed | The environment is on another release. Plan the release in its `environments/<env>.toml`, or check the pipeline's recent deploy runs. |
+| `ci deploy`: another run is queued or running | Wait for it. The pipeline can't show whether that run is a dry run or a real deploy, so axon won't queue behind it unless you pass `--queue`. |
+| `az` / `kubelogin` token expired | Run `az login` again; kubelogin reuses the Azure CLI's login. |
 
 ---
 
