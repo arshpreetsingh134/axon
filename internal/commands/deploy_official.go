@@ -51,9 +51,6 @@ func runPipelineDevDeploy(c *cli.Ctx, m *descriptor.Model, l *official.Layout, e
 
 	var local map[string]string
 	if c.Bool("build") {
-		if len(m.Overlay.LocalBuild) == 0 {
-			return cli.Usage("%s --build: this cluster has no [[local_build]] recipe in its overlay (SPEC.md Appendix C.12)", c.Verb.Name)
-		}
 		lock, err := l.Lock()
 		if err != nil {
 			return err
@@ -62,7 +59,11 @@ func runPipelineDevDeploy(c *cli.Ctx, m *descriptor.Model, l *official.Layout, e
 		if err != nil {
 			return err
 		}
-		builds, notes, err := planLocalBuilds(m.Overlay.LocalBuild, l.Workflow.Materializations, lock, tokens, m.Root, m.Dir,
+		recipes := localRecipes(m.Overlay.LocalBuild, m.Dir, m.Root, l)
+		if len(recipes) == 0 {
+			return cli.Usage("%s --build: no build recipe: neither a GitHub build workflow nor a [[local_build]] recipe builds a member (SPEC.md Appendix C.12)", c.Verb.Name)
+		}
+		builds, notes, err := planLocalBuilds(recipes, l.Workflow.Materializations, lock, tokens, m.Root, m.Dir,
 			c.Strings("app"), c.Bool("rebuild"), realGit{})
 		if err != nil {
 			return err
@@ -84,7 +85,25 @@ func runPipelineDevDeploy(c *cli.Ctx, m *descriptor.Model, l *official.Layout, e
 		}
 	}
 
-	r, err := renderOfficial(m, l, e, e.Name, "", ctx, false, local)
+	// Workflow clients (SPEC.md Appendix C.13): their private key Secrets exist before the render mounts them.
+	desc, err := official.LoadDescriptor(m.Found.Path)
+	if err != nil {
+		return err
+	}
+	var overrides map[string]map[string]string
+	if ov, err := envcfg.LoadOverrides(m.Dir, e.Name); err == nil {
+		overrides = ov.AppEnv
+	}
+	ids := devIdentities(desc, overrides)
+	if _, err := ensureKeySecrets(ids, ctx, e.Namespace, dry); err != nil {
+		return err
+	}
+	keys := map[string]official.ServiceKey{}
+	for _, id := range ids {
+		keys[id.Member] = official.ServiceKey{Secret: id.Secret, Path: id.KeyFile, Extra: id.extraKeys()}
+	}
+
+	r, err := renderOfficial(m, l, e, e.Name, "", ctx, false, local, keys)
 	if err != nil {
 		return err
 	}
@@ -144,6 +163,9 @@ func runPipelineDevDeploy(c *cli.Ctx, m *descriptor.Model, l *official.Layout, e
 		for _, old := range olds {
 			ui.Sub("would scale deployment/%s to 0 once deployment/%s-worker is ready (it polls the same task queue)", old, old)
 		}
+		for _, id := range ids {
+			ui.Sub("would register workflow client %s in %s and grant it workflow.call on %d site(s)", id.ClientID, r.iamOrigin, len(id.Sites))
+		}
 		ui.OK("dry run: the API server accepted %d object(s); nothing was changed", len(apply))
 		return deploy.RunStage(m, deploy.HookVars{Env: e.Name, Target: "k8s", Namespace: e.Namespace, KubeContext: ctx}, "post_deploy", true)
 	}
@@ -170,6 +192,36 @@ func runPipelineDevDeploy(c *cli.Ctx, m *descriptor.Model, l *official.Layout, e
 		ui.Step("deployment/%s is replaced by deployment/%s-worker: scaling it to 0 (the Deployment is kept; --keep-superseded leaves it running)", old, old)
 		if res, err := sh.Run(sh.Cmd{Name: "kubectl", Args: []string{"--context", ctx, "-n", e.Namespace, "scale", "deployment/" + old, "--replicas=0"}}); err != nil {
 			return fmt.Errorf("scale deployment/%s: %w\n%s", old, err, strings.TrimSpace(res.Stderr))
+		}
+	}
+
+	// The IAM reads its configuration at start: when this deploy changed it (a catalog read from a new image, a new
+	// application), restart the IAM so the registrations below see it.
+	if todo[official.Key(official.Normalize(official.Object{"apiVersion": "v1", "kind": "ConfigMap",
+		"metadata": map[string]any{"name": "mycel-iam-configuration", "namespace": e.Namespace}}))] != "" {
+		for _, a := range desc.App {
+			if a.Kind != "iam" {
+				continue
+			}
+			n := official.K8sName(a.Name)
+			ui.Step("the IAM configuration changed: restarting deployment/%s", n)
+			if res, err := sh.Run(sh.Cmd{Name: "kubectl", Args: []string{"--context", ctx, "-n", e.Namespace, "rollout", "restart", "deployment/" + n}}); err != nil {
+				return fmt.Errorf("restart deployment/%s: %w\n%s", n, err, strings.TrimSpace(res.Stderr))
+			}
+			if res, err := sh.Run(sh.Cmd{Name: "kubectl", Args: []string{"--context", ctx, "-n", e.Namespace, "rollout", "status", "deployment/" + n,
+				"--timeout", timeout.String()}, Timeout: timeout + time.Minute}); err != nil {
+				return fmt.Errorf("deployment/%s did not become ready: %w\n%s", n, err, strings.TrimSpace(res.Stderr+res.Stdout))
+			}
+		}
+	}
+
+	if len(ids) > 0 {
+		actor, password := "", ""
+		if con := m.C.Fabric.Console; con != nil {
+			actor, password = con.PushActor, con.PushPassword
+		}
+		if err := provisionIdentities(ids, r.iamOrigin, actor, password, ctx, e.Namespace); err != nil {
+			return fmt.Errorf("workflow clients: %w", err)
 		}
 	}
 

@@ -78,6 +78,28 @@ type iamPage struct {
 	Permission string `json:"permission"`
 }
 
+// Catalog is an access catalog a module image declares (label io.mycel.module.access).
+type Catalog struct {
+	Roles           []string            `json:"roles"`
+	RolePermissions map[string][]string `json:"role_permissions,omitempty"`
+	Teams           []iamTeam           `json:"teams"`
+}
+
+// ParseCatalog reads an io.mycel.module.access label; it must be strict JSON with at least one role.
+func ParseCatalog(label string) (Catalog, error) {
+	var c struct {
+		Version int `json:"version"`
+		Catalog
+	}
+	if err := json.Unmarshal([]byte(label), &c); err != nil {
+		return Catalog{}, fmt.Errorf("io.mycel.module.access is not valid JSON: %w", err)
+	}
+	if len(c.Roles) == 0 {
+		return Catalog{}, fmt.Errorf("io.mycel.module.access declares no roles")
+	}
+	return c.Catalog, nil
+}
+
 type iamCatalog struct {
 	Roles           []string            `json:"roles"`
 	RolePermissions map[string][]string `json:"role_permissions,omitempty"`
@@ -179,6 +201,13 @@ func RenderIAMConfig(in *RenderInput, people []DemoPerson, realm, client string,
 		host, _, _, _, _ := in.Desc.appEntry(s.App)
 		tok := rawToken(in, s.App)
 		c := catalogFor(tok)
+		fromImage := false
+		if ic, ok := in.Catalogs[s.App]; ok {
+			c.Roles, c.RolePermissions, fromImage = ic.Roles, ic.RolePermissions, true
+			if len(ic.Teams) > 0 {
+				c.Teams = ic.Teams
+			}
+		}
 		for _, t := range c.Teams { // an app left as it is still declares its teams
 			declared[s.App+"."+t.Name] = true
 		}
@@ -186,6 +215,12 @@ func RenderIAMConfig(in *RenderInput, people []DemoPerson, realm, client string,
 			continue
 		}
 		version := rt.CatalogVersion[s.App]
+		if fromImage && version != defaultCatalogVersion(c) && tok != "mycel_iam" && tok != "kpi" && tok != "clc" && tok != "workflow_manager" {
+			// the host checks its sessions against the catalog version it derives from its own image the same way
+			// (the compact roles list; role permissions are not part of it), so a business catalog read from an image
+			// always carries that version, never a stale live one
+			version = defaultCatalogVersion(c)
+		}
 		if version == "" {
 			if tok == "mycel_iam" || tok == "kpi" || tok == "clc" || tok == "workflow_manager" {
 				unknown = append(unknown, "catalog version of "+s.App)

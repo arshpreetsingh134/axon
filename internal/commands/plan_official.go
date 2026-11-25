@@ -129,10 +129,11 @@ func liveIAMInputs(ctx, ns string, desc *official.Descriptor) (subject, hash str
 
 // rendered is what renderOfficial produced.
 type rendered struct {
-	objs    []official.Object
-	skipped []string
-	version string
-	dev     bool
+	objs      []official.Object
+	skipped   []string
+	version   string
+	dev       bool
+	iamOrigin string // the cluster IAM's front-door URL (dev)
 }
 
 // renderOfficial renders the deploy objects of an environment of a
@@ -141,8 +142,10 @@ type rendered struct {
 // pinned images (github/materializations) with plain HTTP on the front door,
 // the local Docker Postgres and the environment's overrides, and leaves the
 // running fabric, databases and NetworkPolicies to the cluster.
-// local maps image-backed members to images built from the developer's checkouts (dev only; see up --build).
-func renderOfficial(m *descriptor.Model, l *official.Layout, e *envcfg.Env, env, release, ctx string, offline bool, local map[string]string) (*rendered, error) {
+// local maps image-backed members to images built from the developer's checkouts (dev only; see up --build), keys
+// mounts workflow clients' private keys (dev only; SPEC.md Appendix C.13).
+func renderOfficial(m *descriptor.Model, l *official.Layout, e *envcfg.Env, env, release, ctx string, offline bool, local map[string]string,
+	keys ...map[string]official.ServiceKey) (*rendered, error) {
 	dev := e.Tier == "dev"
 	desc, err := official.LoadDescriptor(m.Found.Path)
 	if err != nil {
@@ -164,6 +167,12 @@ func renderOfficial(m *descriptor.Model, l *official.Layout, e *envcfg.Env, env,
 		}
 		for k, v := range local {
 			in.Images[k] = v
+		}
+		if len(keys) > 0 {
+			in.ServiceKeys = keys[0]
+		}
+		if !offline {
+			in.Catalogs = imageCatalogs(in.Images)
 		}
 		in.Scheme, in.PGDocker, in.ImageIDs = "http", true, true
 		in.FrontPort = fabricInt(desc, "traefik", "http")
@@ -229,7 +238,13 @@ func renderOfficial(m *descriptor.Model, l *official.Layout, e *envcfg.Env, env,
 		objs = append(objs, official.RenderNetworkPolicies(in, append(append([]official.Object{}, objs...), shadow...), official.LoadFrontendIP(m.Dir, env))...)
 		objs = append(objs, official.RenderSingletons(in, official.LoadHelixVaultURL(m.Dir, env))...)
 	}
-	return &rendered{objs: objs, skipped: skipped, version: version, dev: dev}, nil
+	iamOrigin := ""
+	for _, a := range desc.App {
+		if a.Kind == "iam" && a.Host != "" {
+			iamOrigin = in.URL(a.Host)
+		}
+	}
+	return &rendered{objs: objs, skipped: skipped, version: version, dev: dev, iamOrigin: iamOrigin}, nil
 }
 
 // fabricInt reads [fabric.<name>] <key> as an int (0 when absent).

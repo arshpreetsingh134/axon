@@ -359,3 +359,48 @@ TASK_QUEUE = "example"
 		}
 	}
 }
+
+// The access catalog label must be strict JSON: the quotes a CSV-parsed build arg loses make it unreadable.
+func TestParseCatalogIsStrict(t *testing.T) {
+	c, err := ParseCatalog(`{"version":1,"roles":["access","admin","workflow-worker"],"role_permissions":{"workflow-worker":["workflow.call"]},"teams":[{"name":"access","roles":["access"]}]}`)
+	if err != nil || len(c.Roles) != 3 || c.RolePermissions["workflow-worker"][0] != "workflow.call" {
+		t.Fatalf("%+v %v", c, err)
+	}
+	if _, err := ParseCatalog(`{"version":1,"roles":["access",admin,"workflow-worker"]}`); err == nil {
+		t.Fatal("a label without its quotes was accepted")
+	}
+}
+
+// A workflow client's key Secret is mounted read-only at the directory of its key file, readable by the worker's group.
+func TestRenderWorkersMountsTheServiceKey(t *testing.T) {
+	in := &RenderInput{Namespace: "ns", Images: map[string]string{"shop.wfc": "img@sha256:1"}, Desc: &Descriptor{},
+		ServiceKeys: map[string]ServiceKey{"shop.wfc": {Secret: "app-shop-wfc-service-key", Path: "/var/run/secrets/shop/key.pem", Extra: []string{"billing.pem"}}}}
+	in.Desc.App = append(in.Desc.App, struct {
+		Name     string            `toml:"name"`
+		Kind     string            `toml:"kind"`
+		Host     string            `toml:"host"`
+		DB       string            `toml:"db"`
+		Temporal string            `toml:"temporal"`
+		Port     int               `toml:"port"`
+		Env      map[string]string `toml:"env"`
+	}{Name: "shop.wfc", Kind: "project"})
+	objs, _ := RenderWorkers(in)
+	var pod map[string]any
+	for _, o := range objs {
+		if o["kind"] == "Deployment" {
+			pod = o["spec"].(map[string]any)["template"].(map[string]any)["spec"].(map[string]any)
+		}
+	}
+	if pod == nil {
+		t.Fatal("no worker Deployment")
+	}
+	vol := pod["volumes"].([]any)[0].(map[string]any)["secret"].(map[string]any)
+	mnt := pod["containers"].([]any)[0].(map[string]any)["volumeMounts"].([]any)[0].(map[string]any)
+	if vol["secretName"] != "app-shop-wfc-service-key" || mnt["mountPath"] != "/var/run/secrets/shop" || mnt["readOnly"] != true ||
+		pod["securityContext"].(map[string]any)["fsGroup"] != 65532 {
+		t.Fatalf("volume %v mount %v pod %v", vol, mnt, pod["securityContext"])
+	}
+	if items := vol["items"].([]any); len(items) != 2 || items[1].(map[string]any)["key"] != "billing.pem" || items[1].(map[string]any)["path"] != "billing.pem" {
+		t.Fatalf("items %v", items)
+	}
+}
