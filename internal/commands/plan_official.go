@@ -133,7 +133,8 @@ type rendered struct {
 	skipped   []string
 	version   string
 	dev       bool
-	iamOrigin string // the cluster IAM's front-door URL (dev)
+	iamOrigin string            // the cluster IAM's front-door URL (dev)
+	origins   map[string]string // each hosted app's front-door URL (dev)
 }
 
 // renderOfficial renders the deploy objects of an environment of a
@@ -239,12 +240,17 @@ func renderOfficial(m *descriptor.Model, l *official.Layout, e *envcfg.Env, env,
 		objs = append(objs, official.RenderSingletons(in, official.LoadHelixVaultURL(m.Dir, env))...)
 	}
 	iamOrigin := ""
+	origins := map[string]string{}
 	for _, a := range desc.App {
-		if a.Kind == "iam" && a.Host != "" {
+		if a.Host == "" {
+			continue
+		}
+		origins[a.Name] = in.URL(a.Host)
+		if a.Kind == "iam" {
 			iamOrigin = in.URL(a.Host)
 		}
 	}
-	return &rendered{objs: objs, skipped: skipped, version: version, dev: dev, iamOrigin: iamOrigin}, nil
+	return &rendered{objs: objs, skipped: skipped, version: version, dev: dev, iamOrigin: iamOrigin, origins: origins}, nil
 }
 
 // fabricInt reads [fabric.<name>] <key> as an int (0 when absent).

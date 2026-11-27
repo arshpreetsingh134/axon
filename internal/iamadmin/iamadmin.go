@@ -89,6 +89,10 @@ func SignIn(origin, user, password string) (*Client, error) {
 	return c, nil
 }
 
+// Do sends a request with the session's cookies. Other apps of the cluster accept the IAM session, signing in to
+// their host on first use through the redirects the client follows.
+func (c *Client) Do(req *http.Request) (*http.Response, error) { return c.http.Do(req) }
+
 func (c *Client) get(u, accept string) (string, string, error) {
 	req, _ := http.NewRequest(http.MethodGet, u, nil)
 	req.Header.Set("Accept", accept)

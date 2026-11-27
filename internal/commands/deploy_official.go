@@ -128,6 +128,11 @@ func runPipelineDevDeploy(c *cli.Ctx, m *descriptor.Model, l *official.Layout, e
 	if err != nil {
 		return err
 	}
+	if r.dev {
+		if err := ensureAppEnvRefs(r.objs, m, e.Name, ctx, e.Namespace, dry); err != nil {
+			return err
+		}
+	}
 	live, _, err := official.FetchLive(ctx, e.Namespace, kindsOf(r.objs))
 	if err != nil {
 		return err
@@ -247,6 +252,7 @@ func runPipelineDevDeploy(c *cli.Ctx, m *descriptor.Model, l *official.Layout, e
 		if err := provisionClients(clients, m.Overlay.ServiceRoles, r.iamOrigin, r.iamOrigin, actor, password, ctx, e.Namespace); err != nil {
 			return fmt.Errorf("service clients: %w", err)
 		}
+		provisionFormsPolicy(m.Overlay.FormsPolicy, r.origins, r.iamOrigin, actor, password)
 	}
 
 	if !c.Bool("no-hooks") {
