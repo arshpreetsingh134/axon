@@ -352,7 +352,8 @@ func provisionPrincipal(c *iamadmin.Client, principal string, sites []string, ch
 			}
 		}
 		roles, why := choose(site, catalog)
-		var want []string
+		var known []string
+		missing := false
 		held := len(roles) > 0
 		for _, r := range roles {
 			if _, ok := catalog[r]; !ok {
@@ -360,15 +361,16 @@ func provisionPrincipal(c *iamadmin.Client, principal string, sites []string, ch
 				held = false
 				continue
 			}
-			if !holding[r] {
-				want = append(want, r)
-			}
+			known = append(known, r)
+			missing = missing || !holding[r]
 		}
-		if len(want) > 0 {
-			if _, err := c.Act(site, "grant", url.Values{"target": {principal}, "role": want}); err != nil {
+		if missing {
+			// IAM's grant sets the principal's role list on the site: send every role it should hold, not only the
+			// missing ones, which would drop the roles it already holds.
+			if _, err := c.Act(site, "grant", url.Values{"target": {principal}, "role": known}); err != nil {
 				return 0, err
 			}
-			ui.Sub("granted %s on %s to %s", strings.Join(want, ", "), site, principal)
+			ui.Sub("granted %s on %s to %s", strings.Join(known, ", "), site, principal)
 			held = true
 		}
 		if !held {

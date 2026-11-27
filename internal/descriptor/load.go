@@ -52,6 +52,16 @@ type Overlay struct {
 	// ServiceRoles names, per service principal, the catalog roles the dev deploy grants it on its target site when
 	// the catalog alone cannot tell (SPEC.md Appendix C.14).
 	ServiceRoles map[string][]string `toml:"service_roles"`
+	// FormsPolicy lists the Forms Policy grants the dev deploy gives service principals (SPEC.md Appendix C.15).
+	FormsPolicy *FormsPolicyGrants `toml:"forms_policy"`
+}
+
+// FormsPolicyGrants is the overlay's [forms_policy]: the Forms Policy app, the tenant, and per service principal the
+// grants it needs, each "<resource_type>:<resource_id>:<action>".
+type FormsPolicyGrants struct {
+	App    string              `toml:"app"`
+	Tenant string              `toml:"tenant"`
+	Grants map[string][]string `toml:"grants"`
 }
 
 // LocalBuild is one [[local_build]] recipe of the overlay: how the pipeline builds the images of some image-backed

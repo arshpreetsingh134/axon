@@ -78,11 +78,13 @@ func serviceClients(desc *official.Descriptor, overrides map[string]map[string]s
 			if m == nil || strings.HasPrefix(k, "WFC_") {
 				continue
 			}
-			aud, ok := env[m[1]+"_CLIENT_AUDIENCE"]
-			if !ok {
+			if aud, ok := env[m[1]+"_CLIENT_AUDIENCE"]; ok {
+				add(serviceClient{Member: a.Name, Principal: strings.TrimSpace(v), Site: strings.TrimSpace(aud)}, env[m[1]+"_CLIENT_KEY_PEM_BASE64"])
 				continue
 			}
-			add(serviceClient{Member: a.Name, Principal: strings.TrimSpace(v), Site: strings.TrimSpace(aud)}, env[m[1]+"_CLIENT_KEY_PEM_BASE64"])
+			if site, ok := mapClientSite(env, m[1]); ok {
+				add(serviceClient{Member: a.Name, Principal: strings.TrimSpace(v), Site: site}, env[m[1]+"_KEY_PEM_BASE64"])
+			}
 		}
 	}
 	sort.Slice(out, func(i, j int) bool {
@@ -106,6 +108,69 @@ func serviceClients(desc *official.Descriptor, overrides map[string]map[string]s
 		uniq = append(uniq, c)
 	}
 	return uniq, notes
+}
+
+// mapClientSite finds the site of a client whose audience is given as an origin → application map rather than a
+// <T>_CLIENT_AUDIENCE (the Forms shapes, SPEC.md Appendix C.14):
+//   - <P>_CLIENT_ID with <P>_AUDIENCES holding exactly one entry: that entry's application;
+//   - <P>=<Q>_<T> with <Q>_AUDIENCES: the entry for the origin in an <X>_<T>_URL setting of the same member, else the
+//     one entry whose application's last dotted segment is <t>.
+//
+// Its key is <P>_KEY_PEM_BASE64. Anything ambiguous is not a client.
+func mapClientSite(env map[string]string, p string) (string, bool) {
+	if _, ok := env[p+"_KEY_PEM_BASE64"]; !ok {
+		return "", false
+	}
+	read := func(name string) (map[string]string, bool) {
+		raw, ok := env[name]
+		if !ok {
+			return nil, false
+		}
+		var m map[string]string
+		if json.Unmarshal([]byte(raw), &m) != nil || len(m) == 0 {
+			return nil, false
+		}
+		return m, true
+	}
+	if m, ok := read(p + "_AUDIENCES"); ok {
+		if len(m) != 1 {
+			return "", false
+		}
+		for _, site := range m {
+			return strings.TrimSpace(site), true
+		}
+	}
+	i := strings.LastIndex(p, "_")
+	if i <= 0 {
+		return "", false
+	}
+	q, t := p[:i], p[i+1:]
+	m, ok := read(q + "_AUDIENCES")
+	if !ok {
+		return "", false
+	}
+	var origins []string
+	for k, v := range env {
+		if strings.HasSuffix(k, "_"+t+"_URL") {
+			if site, ok := m[strings.TrimRight(strings.TrimSpace(v), "/")]; ok {
+				origins = append(origins, site)
+			}
+		}
+	}
+	if len(origins) == 1 {
+		return strings.TrimSpace(origins[0]), true
+	}
+	var named []string
+	for _, site := range m {
+		s := strings.TrimSpace(site)
+		if strings.EqualFold(s[strings.LastIndex(s, ".")+1:], t) {
+			named = append(named, s)
+		}
+	}
+	if len(origins) == 0 && len(named) == 1 {
+		return named[0], true
+	}
+	return "", false
 }
 
 // chooseClientRoles picks what a client is granted on its site: the overlay's [service_roles] for it; else the

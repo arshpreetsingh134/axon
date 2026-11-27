@@ -966,6 +966,13 @@ The deploy applies only created or changed objects (client-side apply, so the la
 annotation stays the plan's oracle), waits for each rolled-out Deployment, and scales to 0 an
 unrendered `<name>` Deployment once its rendered `<name>-worker` is ready.
 
+Before anything rolls out, every key the rendered workloads read from Secret `mycel-app-env` (a `secretKeyRef`
+without `optional`) must exist: a pod whose key is missing never starts. A missing key is copied from the developer's
+values (the secret store, then `<infra>/.env`, then the process environment; an empty value counts as set). A key
+whose value there differs from the Secret's is updated, so an edit to `.env` reaches the next deploy; keys only the
+Secret holds (such as generated client keys) stay as they are. Anything still missing stops the deploy, naming the keys, before any workload
+changes. Values are never printed.
+
 ### C.12 Local builds in the dev profile (axon extension)
 
 The reference tool's laptop deploy runs these clusters' pinned images; it cannot run a change before
@@ -1041,6 +1048,11 @@ the environment's overrides) and provisions them the same way:
   does not; none, when it maps them all.
 - **An app-to-app client:** `<T>_CLIENT_ID` with `<T>_CLIENT_AUDIENCE` (the application it calls) and
   `<T>_CLIENT_KEY_PEM_BASE64`.
+- **A client with an audience map** (the Forms shapes): `<P>_CLIENT_ID` and `<P>_KEY_PEM_BASE64`, where either
+  `<P>_AUDIENCES` is an origin → application map with exactly one entry (that application), or `<P>` is `<Q>_<T>` and
+  `<Q>_AUDIENCES` is such a map shared by several clients. In the second case the application is the map's entry for
+  the origin in a `*_<T>_URL` setting of the same member, else the one entry whose application's last dotted segment
+  is `<t>`. Anything ambiguous is not a client.
 
 Only keys given as an app-env Secret reference (`${NAME}`) are managed: before the render, every such `NAME` missing
 or empty in Secret `mycel-app-env` gets a new P-256 key, stored as the base64 of its PEM (a later `kubectl apply` of
@@ -1051,4 +1063,23 @@ After the rollout each client is registered (owner: `[fabric.console] push_actor
 and granted on its site, then checked with a token request. The roles: the overlay's `[service_roles]` entry for the
 principal (`"<principal>" = ["<role>", …]`); else the catalog role named like the principal; else the catalog's only
 role with permissions besides `access` and `admin`; else, for an identity-map entry, the roles that carry
-`workflow.call`. Otherwise the client is reported and not granted.
+`workflow.call`. Otherwise the client is reported and not granted. IAM's grant sets a principal's role list on a
+site, so when any role is missing the grant sends every role the principal should hold there.
+
+### C.15 Forms Policy grants in the dev profile (axon extension)
+
+Forms checks its own grants (`/m/forms_policy/grants` of the Forms Policy app) besides IAM roles. The overlay's
+`[forms_policy]` names the app, the tenant and, per service principal, its grants as
+`"<resource_type>:<resource_id>:<action>"`:
+
+```toml
+[forms_policy]
+app    = "acme.all.all.forms.forms-policy"
+tenant = "demo-preview"
+[forms_policy.grants]
+"forms-worker-registry" = ["ecm_archive:*:read", "ecm_archive:*:archive"]
+```
+
+After the service clients (C.14), the deploy signs in as `[fabric.console] push_actor`, lists the tenant's grants
+through the app's front door, and adds the missing ones for subject `service:<principal>`. The actor must hold
+`policy_grant` admin in the tenant. A refusal is reported with what to do and does not fail the deploy.

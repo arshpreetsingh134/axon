@@ -111,3 +111,76 @@ func TestChooseClientRoles(t *testing.T) {
 		}
 	}
 }
+
+// The Forms shapes of insurance.safepoint.mycel's dev overrides: a receiver's single-entry audience map, and the
+// worker's per-target clients sharing one map, resolved by each target's *_URL.
+const formsDesc = `
+[[app]]
+name = "forms.filemanager"
+[app.env]
+FORMS_SERVICE_CLIENT_ID = "forms-filemanager-policy"
+FORMS_SERVICE_AUDIENCES = '{"http://app-forms-policy:9080": "forms.forms-policy"}'
+FORMS_SERVICE_KEY_PEM_BASE64 = "${FM_POLICY_KEY}"
+
+[[app]]
+name = "forms.wfc"
+kind = "project"
+[app.env]
+FORMS_WORKER_AUDIENCES = '{"http://app-forms-filemanager:9080": "forms.filemanager", "http://app-forms-registry:9080": "forms.registry", "http://app-forms-delivery:9080": "forms.delivery"}'
+FORMS_WORKER_FILEMANAGER_CLIENT_ID = "forms-worker-filemanager"
+FORMS_WORKER_FILEMANAGER_KEY_PEM_BASE64 = "${W_FM_KEY}"
+MYCEL_PAS_FILEMANAGER_URL = "http://app-forms-filemanager:9080"
+FORMS_WORKER_REGISTRY_CLIENT_ID = "forms-worker-registry"
+FORMS_WORKER_REGISTRY_KEY_PEM_BASE64 = "${W_REG_KEY}"
+MYCEL_PAS_REGISTRY_URL = "http://app-forms-registry:9080"
+FORMS_WORKER_DELIVERY_CLIENT_ID = "forms-worker-delivery"
+FORMS_WORKER_DELIVERY_KEY_PEM_BASE64 = "${W_DEL_KEY}"
+OIDC_CLIENT_ID = "not-a-service-client"
+`
+
+func TestServiceClientsFormsShapes(t *testing.T) {
+	got, notes := serviceClients(loadDesc(t, formsDesc), nil)
+	var have []string
+	for _, c := range got {
+		have = append(have, c.Principal+" "+c.Site+" "+c.KeyRef)
+	}
+	want := []string{
+		"forms-filemanager-policy forms.forms-policy FM_POLICY_KEY",
+		"forms-worker-delivery forms.delivery W_DEL_KEY", // no *_DELIVERY_URL: found by the site's last segment
+		"forms-worker-filemanager forms.filemanager W_FM_KEY",
+		"forms-worker-registry forms.registry W_REG_KEY",
+	}
+	if !reflect.DeepEqual(have, want) || len(notes) != 0 {
+		t.Fatalf("clients:\n%s\nwant:\n%s\nnotes: %v", strings.Join(have, "\n"), strings.Join(want, "\n"), notes)
+	}
+}
+
+func TestMapClientSiteAmbiguous(t *testing.T) {
+	env := map[string]string{
+		"X_SERVICE_KEY_PEM_BASE64":  "${K}",
+		"X_SERVICE_AUDIENCES":       `{"http://a:9080":"s.a","http://b:9080":"s.b"}`, // two entries: no single site
+		"X_WORKER_A_KEY_PEM_BASE64": "${K2}",
+		"X_WORKER_AUDIENCES":        `{"http://a:9080":"one.a","http://b:9080":"two.a"}`, // two sites end in "a"
+	}
+	if site, ok := mapClientSite(env, "X_SERVICE"); ok {
+		t.Fatalf("X_SERVICE resolved to %s", site)
+	}
+	if site, ok := mapClientSite(env, "X_WORKER_A"); ok {
+		t.Fatalf("X_WORKER_A resolved to %s", site)
+	}
+	if _, ok := mapClientSite(map[string]string{"P_AUDIENCES": `{"o":"s"}`}, "P"); ok {
+		t.Fatal("a client without a key reference resolved")
+	}
+}
+
+func TestAppEnvRefs(t *testing.T) {
+	objs := []official.Object{{"spec": map[string]any{"template": map[string]any{"spec": map[string]any{"containers": []any{
+		map[string]any{"env": []any{
+			map[string]any{"name": "A", "valueFrom": map[string]any{"secretKeyRef": map[string]any{"name": "mycel-app-env", "key": "PULSE_API_KEY"}}},
+			map[string]any{"name": "B", "valueFrom": map[string]any{"secretKeyRef": map[string]any{"name": "mycel-app-env", "key": "OPT", "optional": true}}},
+			map[string]any{"name": "C", "valueFrom": map[string]any{"secretKeyRef": map[string]any{"name": "other", "key": "X"}}},
+		}}}}}}}}
+	if got := appEnvRefs(objs); !reflect.DeepEqual(got, []string{"PULSE_API_KEY"}) {
+		t.Fatalf("refs: %v", got)
+	}
+}
